@@ -270,20 +270,34 @@ async def poll_api(token: str) -> dict | None:
         # Network/DNS/timeout — transient. Return None (no toast), retry next tick.
         log(f"API call failed: {e}")
         return None
+    # Before the status branches: a 429 is exactly the response that carries
+    # the interesting headers, and the branches below can return early.
+    report_unknown_ratelimit_headers(resp.headers)
+
     if resp.status_code in (401, 403):
         # Genuine auth rejection — the ONLY case that warrants the actionable
         # "run claude login" toast.
         log(f"API HTTP {resp.status_code}: {resp.text[:200]}")
         raise AuthError(resp.status_code)
     if resp.status_code >= 400:
-        # Other 4xx/5xx (rate-limit, server error) — transient, not a token issue.
-        log(f"API HTTP {resp.status_code}: {resp.text[:200]}")
-        return None
+        # A 429 means the plan's limit is used up — which rejects this probe
+        # too. It still carries the rate-limit headers, though, and that is the
+        # one moment the device most needs them: dropping the response here
+        # left the display frozen on the last value and then flipped it to
+        # the idle "no data" screen, exactly when usage hit 100 %. So a 429
+        # WITH the headers is reported like any other reading. Everything
+        # else (5xx, a 429 without headers) is transient: skip this tick.
+        has_limits = bool(
+            resp.headers.get("anthropic-ratelimit-unified-5h-utilization")
+            or resp.headers.get("anthropic-ratelimit-unified-overage-utilization")
+        )
+        if resp.status_code != 429 or not has_limits:
+            log(f"API HTTP {resp.status_code}: {resp.text[:200]}")
+            return None
+        log("API HTTP 429: limit reached, reporting it from the response headers")
 
     def hdr(name: str, default: str = "0") -> str:
         return resp.headers.get(name, default)
-
-    report_unknown_ratelimit_headers(resp.headers)
 
     now = time.time()
 
@@ -296,8 +310,10 @@ async def poll_api(token: str) -> dict | None:
         return int(round(mins)) if mins > 0 else 0
 
     def pct(util: str) -> int:
+        # Clamped: at the limit the reported utilization can edge past 1.0,
+        # and "103 %" on a bar that ends at 100 only reads as a glitch.
         try:
-            return int(round(float(util) * 100))
+            return max(0, min(100, int(round(float(util) * 100))))
         except ValueError:
             return 0
 
@@ -409,7 +425,9 @@ def discover_bonded_address() -> str | None:
         return None
     command = (
         "Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | "
-        f"Where-Object {{ $_.FriendlyName -eq '{DEVICE_NAME}' }} | "
+        # -like, not -eq: boards append the last two bytes of their MAC
+        # ("Clawdmeter 35F9") so several of them stay distinguishable.
+        f"Where-Object {{ $_.FriendlyName -like '{DEVICE_NAME}*' }} | "
         "Select-Object -ExpandProperty InstanceId"
     )
     try:
@@ -674,59 +692,27 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
     letzte_nutzlast = None
     used_successfully = False
     consecutive_failures = 0  # D-03: zombie-link break counter
-
-    def note_write_failure() -> bool:
-        """Count a failed device write toward the zombie-link breaker.
-
-        Returns True when too many writes have failed in a row and the caller
-        should abandon the (likely zombie) link so the outer loop reconnects.
-        Applies to every device write — data payloads and no-data beats alike —
-        so a dead link still trips the breaker even when the token is also dead.
-        """
-        nonlocal consecutive_failures
-        consecutive_failures += 1
-        if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
-            log(
-                f"Zombie link detected ({consecutive_failures} consecutive"
-                f" write failures); abandoning connection"
-            )
-            return True
-        return False
-
     try:
         while client.is_connected and not stop_event.is_set():
             now = time.time()
             elapsed = now - last_poll
             if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
                 session.refresh_requested.clear()
-                # Pure free-ride: read whatever access token Claude Code currently
-                # holds and NEVER refresh it ourselves. Claude Code (the token's owner)
-                # does all refreshing; refreshing here would race its rotation and feed
-                # the OAuth endpoint's rate limit (429). When the token is dead we just
-                # show "No data" until the CLI re-seeds it.
                 token = read_token()  # D-09: fresh each cycle
                 if not token:
-                    log("No token; signalling no-data to device")
+                    log("No token; skipping poll")
                     if tray_state:
                         tray_state.set_error("token expired — run claude login")
-                    if await session.write_payload({"ok": False}):
-                        last_poll = time.time()
-                        consecutive_failures = 0  # D-03: healthy link
-                    elif note_write_failure():
-                        break
                 else:
-                    payload = None
                     expired = False
                     try:
                         payload = await poll_api(token)
                     except AuthError:
-                        # Pure free-ride: we never refresh. A 401/403 means Claude Code's
-                        # token has expired and only Claude Code (its owner) can re-seed it.
+                        # Real 401/403 — token genuinely needs a refresh.
                         expired = True
-                        log("Token expired/invalid; signalling no-data — run `claude login` "
-                            "or use the CLI to let Claude Code renew it")
                         if tray_state:
                             tray_state.set_error("token expired — run claude login")
+                        payload = None
                     if payload is not None:
                         letzte_nutzlast = dict(payload)
                         payload = await add_session_fields(payload)
@@ -737,17 +723,31 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                             consecutive_failures = 0  # D-03: reset on success
                             if tray_state:
                                 tray_state.set_connected(time.time())
-                        elif note_write_failure():
-                            break
+                        else:
+                            consecutive_failures += 1
+                            if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
+                                log(
+                                    f"Zombie link detected ({consecutive_failures} consecutive"
+                                    f" write failures); abandoning connection"
+                                )
+                                break
                     elif expired:
-                        # Token genuinely dead -> show "No data" now instead of stale numbers.
-                        # Transient poll failures (payload None without expiry) stay silent.
+                        # Token genuinely dead -> show "No data" now instead of
+                        # stale numbers. Same reasoning as the 429 handling above:
+                        # a frozen display that still shows yesterday's figure is
+                        # worse than one that admits it does not know.
                         log("No data (token dead); signalling idle to device")
                         if await session.write_payload({"ok": False}):
                             last_poll = time.time()
-                            consecutive_failures = 0  # D-03: healthy link
-                        elif note_write_failure():
-                            break
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                            if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
+                                log(
+                                    f"Zombie link detected ({consecutive_failures} consecutive"
+                                    f" write failures); abandoning connection"
+                                )
+                                break
                     # else: payload is None from a TRANSIENT failure (network/DNS,
                     # timeout, rate-limit, 5xx). poll_api already logged it; do NOT
                     # toast "token expired" — that mislabeled a boot-time DNS blip
@@ -766,8 +766,14 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                     if await session.write_payload(aktualisiert):
                         last_sessions_push = time.time()
                         consecutive_failures = 0
-                    elif note_write_failure():
-                        break
+                    else:
+                        consecutive_failures += 1
+                        if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
+                            log(
+                                f"Zombie link detected ({consecutive_failures} consecutive"
+                                f" write failures); abandoning connection"
+                            )
+                            break
                 else:
                     last_sessions_push = time.time()
 
