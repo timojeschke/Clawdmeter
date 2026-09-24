@@ -53,6 +53,7 @@ struct Layout {
     int16_t logo_y;                  // logo top edge
     int16_t batt_y;                  // battery icon top edge
     int16_t batt_w;                  // battery icon width, for position math
+    const lv_font_t* sess_count_font; // session counts — serif, like the title
     const lv_font_t* batt_font;      // battery percentage
     int16_t batt_lbl_gap;            // gap when the percentage sits beside it
     int16_t batt_h;                  // battery body height
@@ -104,16 +105,19 @@ static void compute_layout(const BoardCaps& c) {
     L.logo_y = L.title_y - 10;
     // Centred where the 48 px icon's centre used to be, so the header keeps
     // its balance against the logo on the left.
-    L.batt_y = L.title_y + 9;
+    // Tiempos for the counts, not Styrene: the serif is Claude's display face
+    // and it ties the three numbers to the "Sessions" title above them.
+    L.sess_count_font = &font_tiempos_56;
+    L.batt_y = L.title_y + 6;
     // Deliberately larger than the 48 px icon it replaced: at arm's length on
     // a desk the number has to be readable at a glance, and the header has the
     // room. Only one weight of Styrene ships, so "heavier" means a larger size.
-    L.batt_w = 58;
-    L.batt_h = 30;
-    L.batt_nub_w = 5;
-    L.batt_nub_h = 14;
+    L.batt_w = 68;
+    L.batt_h = 36;
+    L.batt_nub_w = 6;
+    L.batt_nub_h = 16;
     L.batt_inside = true;
-    L.batt_font = &font_styrene_20;
+    L.batt_font = &font_styrene_24;
     L.batt_lbl_gap = 6;
     L.pair_y1 = 40;
     L.pair_y2 = 120;
@@ -177,6 +181,7 @@ static void compute_layout(const BoardCaps& c) {
         L.small_icons = true;
         L.title_nudge = 8;
         L.logo_y = 2;
+        L.sess_count_font = &font_tiempos_34;
         L.batt_y = 16;   // same centre the 24 px icon had
         // At this size the interior is ~7 px tall — no font is legible in
         // there, so the number stays beside the battery on small screens.
@@ -223,9 +228,11 @@ static lv_obj_t* sessions_container;
 static lv_obj_t* sess_count_lbl[3];     // waiting / working / parked
 static lv_obj_t* sess_name_lbl[SESSIONS_MAX_NAMES];
 static lv_obj_t* sess_list_panel;       // card holding the waiting sessions
+static lv_obj_t* sess_list_caption;     // "Waiting for input" above the names
 static lv_obj_t* sess_more_lbl;         // "+N more" when the list was trimmed
 static int16_t   sess_row_h;            // row pitch, for resizing the card
 static int16_t   sess_first_row_y;      // y of the first name inside the card
+static int16_t   sess_list_max_h;       // card height when it runs to the bottom
 static lv_obj_t* sess_hint_lbl;         // shown when no session data has arrived
 static lv_obj_t* lbl_title;
 // Clock fed by the daemon: base epoch (local wall-clock seconds) + the lv_tick at
@@ -557,7 +564,7 @@ static void build_idle_group(lv_obj_t* parent) {
 static lv_obj_t* make_session_count(lv_obj_t* parent, int16_t x, int16_t w,
                                     const char* caption, lv_color_t colour) {
     lv_obj_t* zahl = lv_label_create(parent);
-    lv_obj_set_style_text_font(zahl, L.pct_font, 0);
+    lv_obj_set_style_text_font(zahl, L.sess_count_font, 0);
     lv_obj_set_style_text_color(zahl, colour, 0);
     lv_obj_set_style_text_align(zahl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(zahl, w);
@@ -596,7 +603,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
     // Height from the content, not from the usage screen's panel height —
     // the number plus its caption is barely half of that, and the leftover
     // read as a broken panel.
-    const int16_t zahlen_h = L.pct_font->line_height + 2
+    const int16_t zahlen_h = L.sess_count_font->line_height + 2
                            + L.pace_font->line_height + 2 * L.panel_pad_y;
     lv_obj_t* zahlen = make_panel(sessions_container, L.margin, L.content_y,
                                   L.content_w, zahlen_h);
@@ -618,11 +625,11 @@ static void init_sessions_screen(lv_obj_t* scr) {
     sess_list_panel = make_panel(sessions_container, L.margin, liste_y,
                                  L.content_w, zeile_h * 2);
 
-    lv_obj_t* ueberschrift = lv_label_create(sess_list_panel);
-    lv_obj_set_style_text_font(ueberschrift, L.pace_font, 0);
-    lv_obj_set_style_text_color(ueberschrift, COL_DIM, 0);
-    lv_label_set_text(ueberschrift, "Waiting for input");
-    lv_obj_set_pos(ueberschrift, 0, 0);
+    sess_list_caption = lv_label_create(sess_list_panel);
+    lv_obj_set_style_text_font(sess_list_caption, L.pace_font, 0);
+    lv_obj_set_style_text_color(sess_list_caption, COL_DIM, 0);
+    lv_label_set_text(sess_list_caption, "Waiting for input");
+    lv_obj_set_pos(sess_list_caption, 0, 0);
     const int16_t erste_zeile = L.pace_font->line_height + 6;
 
     for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
@@ -646,15 +653,16 @@ static void init_sessions_screen(lv_obj_t* scr) {
     // Row geometry the update pass needs to resize the card to its content.
     sess_row_h = zeile_h;
     sess_first_row_y = erste_zeile;
+    sess_list_max_h = L.scr_h - liste_y - L.margin;
 
     // Shown instead of three zeros when nothing has arrived: "0 waiting" and
     // "nothing known" look identical otherwise, and mean opposite things.
-    sess_hint_lbl = lv_label_create(sessions_container);
+    // Lives inside the same card, at the same inset as the names — a bare
+    // sentence floating where a panel belongs looks like a rendering fault.
+    sess_hint_lbl = lv_label_create(sess_list_panel);
     lv_obj_set_style_text_font(sess_hint_lbl, L.reset_font, 0);
     lv_obj_set_style_text_color(sess_hint_lbl, COL_DIM, 0);
-    lv_obj_set_style_text_align(sess_hint_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(sess_hint_lbl, L.content_w);
-    lv_obj_set_pos(sess_hint_lbl, L.margin, liste_y);
+    lv_obj_set_pos(sess_hint_lbl, 0, erste_zeile);
     lv_label_set_text(sess_hint_lbl, "No session data");
 
     lv_obj_add_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
@@ -669,12 +677,18 @@ static void update_sessions_screen(const UsageData* d) {
             lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
         }
         lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(sess_list_panel, sess_row_h + 2 * L.panel_pad_y);
+        // "Waiting for input" über "No session data" widerspricht sich.
+        lv_obj_add_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(sess_hint_lbl, 0, 0);
         lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
         return;
     }
     lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
 
+    lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text_fmt(sess_count_lbl[0], "%d", d->sessions_waiting);
     lv_label_set_text_fmt(sess_count_lbl[1], "%d", d->sessions_working);
@@ -699,13 +713,13 @@ static void update_sessions_screen(const UsageData* d) {
         lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // The card shrinks to what it holds. A panel sized for six names with two
-    // in it reads as something failed to load.
+    // With names present the card runs to the bottom margin instead of hugging
+    // its content: three lines in a card that stops after three lines leaves a
+    // ragged gap under it, and the page has nothing else to put there.
     if (zeilen == 0) {
         lv_obj_add_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
     } else {
-        lv_obj_set_height(sess_list_panel,
-                          sess_first_row_y + zeilen * sess_row_h + L.panel_pad_y);
+        lv_obj_set_height(sess_list_panel, sess_list_max_h);
     }
 }
 
