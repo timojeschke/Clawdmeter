@@ -242,7 +242,7 @@ static lv_obj_t* sess_more_lbl;         // "+N more" when the list was trimmed
 static int16_t   sess_row_h;            // row pitch, for resizing the card
 static int16_t   sess_first_row_y;      // y of the first name inside the card
 static int16_t   sess_list_max_h;       // card height when it runs to the bottom
-#define SESS_ZEILEN_WUNSCH 4
+#define SESS_ZEILEN_WUNSCH 5
 static int16_t   sess_max_zeilen;       // wie viele Namen wirklich in die Karte passen
 static lv_obj_t* sess_hint_lbl;         // shown when no session data has arrived
 static lv_obj_t* lbl_title;
@@ -284,8 +284,9 @@ static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    
 // Solid terracotta, the same accent the usage bars use — the header then reads
 // as part of the same design instead of a grey box borrowed from elsewhere.
 // Durchmesser des Rings neben der Modellquote, und die Dicke seines Bogens.
-#define SCOPED_RING_PX    28
-#define SCOPED_RING_DICKE  4
+#define SCOPED_RING_PX    34
+#define SCOPED_RING_Y_KORR 2
+#define SCOPED_RING_DICKE  5
 
 #define BATT_FILL_OPA LV_OPA_COVER
 
@@ -300,10 +301,18 @@ static lv_obj_t* battery_lbl;
 // als Regular vor (assets/StyreneB-Regular.otf); ein echter Fettschnitt hiesse
 // eine zweite Schriftdatei fuer drei Ziffern. Zwei Versaetze statt einem, weil
 // einer allein gegen die gefuellte Flaeche noch zu duenn wirkte.
-#define BATT_FETT_EBENEN 3
+// Styrene liegt hier nur als Regular vor (assets/StyreneB-Regular.otf). Statt
+// eine zweite Schriftdatei fuer drei Ziffern einzubinden, wird die Zahl acht
+// Mal ringsum versetzt gezeichnet — eine Umrandung von einem Pixel in jede
+// Richtung. Das verdickt den Strich symmetrisch; ein Versatz nur nach unten
+// rechts, wie vorher, sieht aus wie ein Schatten und nicht wie Fettdruck.
+#define BATT_FETT_EBENEN 8
 static lv_obj_t* battery_lbl_fett[BATT_FETT_EBENEN];
-static const lv_point_t BATT_FETT_VERSATZ[BATT_FETT_EBENEN] =
-    { {1, 0}, {0, 1}, {1, 1} };
+static const lv_point_t BATT_FETT_VERSATZ[BATT_FETT_EBENEN] = {
+    {-1, -1}, { 0, -1}, { 1, -1},
+    {-1,  0},           { 1,  0},
+    {-1,  1}, { 0,  1}, { 1,  1},
+};
 static lv_obj_t* battery_sub_lbl;   // charge symbol while charging, else time left
 static lv_obj_t* logo_img;
 
@@ -683,7 +692,11 @@ static void init_sessions_screen(lv_obj_t* scr) {
     // stat block with loose text under it. Only the waiting ones are listed:
     // running and parked sessions ask nothing of anyone.
     const int16_t liste_y = L.content_y + zahlen_h + L.usage_panel_gap;
-    const int16_t zeile_h = L.sess_name_font->line_height + 4;
+    // Gemessen (Simulator, 480x480): Bei 4 px Zeilenabstand ergeben sich
+    // 35 px je Zeile, und in die 173 px der Karte passen genau vier. Timo will
+    // fuenf. Zwei Pixel weniger Abstand reichen dafuer — bei 24 px Schrift
+    // stehen die Zeilen dann dichter, aber nicht gedraengt.
+    const int16_t zeile_h = L.sess_name_font->line_height + 2;
 
     sess_list_panel = make_panel(sessions_container, L.margin, liste_y,
                                  L.content_w, zeile_h * 2);
@@ -971,9 +984,14 @@ void ui_update(const UsageData* data) {
                                            pct_color((float)data->scoped_pct),
                                            LV_PART_INDICATOR);
                 lv_obj_clear_flag(scoped_ring, LV_OBJ_FLAG_HIDDEN);
+                // Erst das Etikett ausmessen lassen, sonst richtet sich der
+                // Ring nach einer Breite von null aus und sitzt daneben.
+                // Die Feinkorrektur nach unten gleicht aus, dass die Ziffern
+                // ihre Grundlinie oberhalb der Zeilenmitte haben — ohne sie
+                // schwebt der Ring sichtbar zu hoch.
                 lv_obj_update_layout(lbl_scoped);
                 lv_obj_align_to(scoped_ring, lbl_scoped,
-                                LV_ALIGN_OUT_LEFT_MID, -12, 0);
+                                LV_ALIGN_OUT_LEFT_MID, -12, SCOPED_RING_Y_KORR);
             }
             if (lbl_anim) lv_obj_add_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -1152,9 +1170,12 @@ static void apply_battery_visibility(void) {
     if (!battery_body) return;
     // On the splash the whole indicator gets out of the way of the artwork.
     const bool hide = (current_screen == SCREEN_SPLASH);
-    lv_obj_t* teile[] = { battery_body, battery_nub, battery_lbl,
-                          battery_lbl_fett[0], battery_lbl_fett[1],
-                          battery_sub_lbl };
+    lv_obj_t* teile[4 + BATT_FETT_EBENEN] = {
+        battery_body, battery_nub, battery_lbl, battery_sub_lbl
+    };
+    for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
+        teile[4 + i] = battery_lbl_fett[i];
+    }
     for (lv_obj_t* teil : teile) {
         if (!teil) continue;
         if (hide) lv_obj_add_flag(teil, LV_OBJ_FLAG_HIDDEN);
@@ -1186,29 +1207,43 @@ static void global_click_cb(lv_event_t* e) {
     }
 }
 
-// Einblenden statt harter Umschaltung. Ein Schnitt auf einem Tischdisplay
-// wirkt wie ein Aussetzer; eine kurze Bewegung sagt "eine andere Seite", nicht
-// "etwas ist kaputtgegangen". Kurz gehalten, weil das Geraet im Vorbeigehen
-// gelesen wird und niemand auf eine Animation warten will.
-#define SEITENWECHSEL_MS 220
+// Die neue Seite faehrt herein, statt zu erscheinen. Ein Schnitt auf einem
+// Tischdisplay wirkt wie ein Aussetzer; eine Bewegung sagt "andere Seite".
+//
+// Die Richtung traegt dabei Bedeutung: Vorwaerts kommt die Seite von rechts,
+// rueckwaerts von links — so, wie man ein Blatt schiebt. Das gilt fuer die
+// Knoepfe und fuer den automatischen Wechsel gleichermassen, sonst fuehlt sich
+// dasselbe Ereignis unterschiedlich an.
+//
+// Kurz gehalten: Das Geraet wird im Vorbeigehen gelesen, niemand wartet gern
+// auf eine Animation.
+#define SEITENWECHSEL_MS 260
 
-static void seite_einblenden(lv_obj_t* container) {
+static void seite_hereinfahren(lv_obj_t* container, int16_t von_x) {
     if (!container) return;
-    lv_obj_set_style_opa(container, LV_OPA_TRANSP, 0);
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, container);
-    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_values(&a, von_x, 0);
     lv_anim_set_time(&a, SEITENWECHSEL_MS);
+    // ease_out: schnell anfahren, sanft ankommen — das liest sich als
+    // "gelandet" statt als "abgebrochen".
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_set_exec_cb(&a, [](void* obj, int32_t v) {
-        lv_obj_set_style_opa((lv_obj_t*)obj, (lv_opa_t)v, 0);
+        lv_obj_set_x((lv_obj_t*)obj, (int16_t)v);
     });
     lv_anim_start(&a);
 }
 
+// Richtung des naechsten Wechsels: +1 vorwaerts, -1 rueckwaerts. Wird von
+// ui_next_screen/ui_prev_screen gesetzt und nach jedem Wechsel auf vorwaerts
+// zurueckgestellt, damit ein direkter ui_show_screen-Aufruf nicht die Richtung
+// des letzten Knopfdrucks erbt.
+static int8_t wechsel_richtung = 1;
+
 void ui_show_screen(screen_t screen) {
     const bool wechsel = (screen != current_screen);
+    const int16_t von_x = wechsel_richtung >= 0 ? L.scr_w : -L.scr_w;
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
     if (sessions_container) lv_obj_add_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
@@ -1217,12 +1252,12 @@ void ui_show_screen(screen_t screen) {
     case SCREEN_SPLASH:  splash_show(); break;
     case SCREEN_USAGE:
         lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
-        if (wechsel) seite_einblenden(usage_container);
+        if (wechsel) seite_hereinfahren(usage_container, von_x);
         break;
     case SCREEN_SESSIONS:
         if (sessions_container) {
             lv_obj_clear_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
-            if (wechsel) seite_einblenden(sessions_container);
+            if (wechsel) seite_hereinfahren(sessions_container, von_x);
         }
         break;
     default: break;
@@ -1237,14 +1272,17 @@ void ui_show_screen(screen_t screen) {
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
     letzte_seitenaktion_ms = lv_tick_get();
+    wechsel_richtung = 1;
     apply_battery_visibility();
 }
 
 void ui_next_screen(void) {
+    wechsel_richtung = 1;
     ui_show_screen((screen_t)((current_screen + 1) % SCREEN_COUNT));
 }
 
 void ui_prev_screen(void) {
+    wechsel_richtung = -1;
     ui_show_screen((screen_t)((current_screen + SCREEN_COUNT - 1) % SCREEN_COUNT));
 }
 
@@ -1278,6 +1316,7 @@ void ui_auto_rotate_tick(void) {
     const uint32_t jetzt = lv_tick_get();
     if (jetzt - letzte_seitenaktion_ms < AUTO_WECHSEL_MS) return;
     letzte_seitenaktion_ms = jetzt;
+    wechsel_richtung = 1;   // immer vorwaerts, wie beim rechten Knopf
     ui_show_screen(current_screen == SCREEN_USAGE ? SCREEN_SESSIONS
                                                   : SCREEN_USAGE);
 }
@@ -1316,10 +1355,11 @@ void ui_update_battery(int percent, bool charging) {
         } else if (rest >= 0) {
             // Rounded to the coarseness the estimate deserves: a drain slope
             // from a whole-percent reading cannot justify single minutes.
-            // "ca." statt der Tilde: Das Zeichen liest sich auf einem
-            // Tischdisplay wie ein Strich, das Wort sagt, was gemeint ist.
-            if (rest >= 60) lv_label_set_text_fmt(battery_sub_lbl, "ca. %dh %02dm", rest / 60, rest % 60);
-            else            lv_label_set_text_fmt(battery_sub_lbl, "ca. %dm", rest);
+            // Minuten, auch ueber einer Stunde: Timo will eine Zahl, die er
+            // ohne Umrechnen mit der Zeit vergleichen kann, die er noch am
+            // Schreibtisch sitzt. "ca." statt einer Tilde, weil die Tilde auf
+            // einem Tischdisplay wie ein Strich aussieht.
+            lv_label_set_text_fmt(battery_sub_lbl, "ca. %d min", rest);
         } else {
             lv_label_set_text(battery_sub_lbl, "");
         }
