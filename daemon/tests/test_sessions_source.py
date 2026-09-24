@@ -40,7 +40,12 @@ def _stand(wartend, arbeitend=1, geparkt=20, frisch=True, alter=4):
 
 
 def _groesse(payload):
-    return len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    # Bewusst die Produktionsfunktion, keine Nachbildung: Als der Daemon auf
+    # ensure_ascii=False umgestellt wurde, mass eine eigene Kopie hier noch die
+    # Escape-Schreibweise und schlug fehl, obwohl die Nutzlast passte. Zwei
+    # Stellen, die dasselbe berechnen, laufen irgendwann auseinander.
+    from daemon.sessions_source import _serialised_size
+    return _serialised_size(payload)
 
 
 # --- Konfiguration ---------------------------------------------------------
@@ -128,13 +133,13 @@ def test_kurze_liste_kommt_vollstaendig_durch():
     assert "sx" not in r
 
 
-def test_lange_namen_werden_an_der_wortgrenze_gekuerzt():
+def test_lange_namen_enden_mit_auslassungszeichen():
     # Frueher wurde hart nach MAX_NAME_CHARS geschnitten. Das ergab Bruchstuecke
     # wie "Stoetefalke - Webse"; die Wortgrenze liefert den Teil, der die
     # Session tatsaechlich identifiziert.
     lang = "Stoetefalke - Webseite Personal Training"
     r = merge_into_payload(BASIS, _stand([lang]))
-    assert r["sn"] == ["Stoetefalke"]
+    assert r["sn"] == ["Stoetefalke\u2026"]
 
 
 def test_viele_sessions_sprengen_die_grenze_nicht():
@@ -297,15 +302,23 @@ def test_nutzlast_ohne_sessions_wird_nicht_zweimal_versucht():
 # --- Namenskuerzung ---------------------------------------------------------
 
 @pytest.mark.parametrize("roh, erwartet", [
-    ("Stötefalke - Webseite Personal Training", "Stötefalke"),
-    ("AckerMind - Social Media",                "AckerMind"),
-    ("TJCreate - CRM",                          "TJCreate - CRM"),   # passt
-    ("Heimatschutzverein - Webseite",           "Heimatschutzverein"),
-    ("Donaudampfschifffahrtsgesellschaft",      "Donaudampfschifffa"),  # keine Grenze
+    # Wortgrenze vorhanden und weit genug hinten: dort wird geschnitten.
+    ("Stötefalke - Webseite Personal Training", "Stötefalke…"),
+    ("AckerMind - Social Media",                "AckerMind…"),
+    # Grenzfall aus dem Feld (PC-Session, 2026-09-25): 19 Zeichen, Grenze bei
+    # Index 8. Frueher wurde daraus "Privat - Clawdmete".
+    ("Privat - Clawdmeter",                     "Privat…"),
+    # Passt vollstaendig — kein Auslassungszeichen, sonst behauptet es etwas.
+    ("TJCreate - CRM",                          "TJCreate - CRM"),
+    # Genau auf der Grenze: 18 Zeichen bleiben unangetastet.
+    ("Heimatschutzverein",                      "Heimatschutzverein"),
+    # Keine brauchbare Wortgrenze: harter Schnitt, aber markiert.
+    ("Donaudampfschifffahrtsgesellschaft",      "Donaudampfschifff…"),
 ])
-def test_lange_namen_brechen_an_der_wortgrenze(roh, erwartet):
-    # Ein harter Schnitt liefert Bruchstuecke wie "Stötefalke - Webse", die auf
-    # einem Blick-Display wie ein Tippfehler wirken.
+def test_zu_lange_namen_enden_mit_auslassungszeichen(roh, erwartet):
+    # Timos Regel: Ein gekuerzter Name muss sagen, dass er gekuerzt ist. Ein
+    # blosser Schnitt liefert "Stötefalke - Webse" — auf einem Blick-Display
+    # liest sich das wie ein Tippfehler, nicht wie eine Abkuerzung.
     from daemon.sessions_source import _kuerzen, MAX_NAME_CHARS
     ergebnis = _kuerzen(roh)
     assert ergebnis == erwartet

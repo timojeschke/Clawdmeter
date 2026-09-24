@@ -43,6 +43,14 @@ PAYLOAD_LIMIT_BYTES = 230
 # ensure_ascii, so "ö" travels as ö.
 MAX_NAME_CHARS = 18
 
+# Shortest prefix still worth keeping when a word boundary decides the cut.
+# Below this the boundary says less than the letters it would drop.
+MIN_NAME_REST_CHARS = 5
+
+# One character, so the cut costs the name only one letter. Two bytes over the
+# wire now that the payload travels as UTF-8 — as three dots it would be three.
+ELLIPSE = "\u2026"
+
 # A session list is worth showing only while it is current. Past this the
 # device shows counts without names rather than a plausible-looking lie.
 MAX_AGE_SECONDS = 300
@@ -125,25 +133,34 @@ def _waiting_names(daten: dict) -> list[str]:
 
 
 def _kuerzen(name: str) -> str:
-    """Shorten to MAX_NAME_CHARS, preferring a word boundary.
+    """Shorten to MAX_NAME_CHARS, marking the cut with an ellipsis.
 
-    A hard slice produces "Stötefalke - Webse" — a fragment that reads like a
-    typo on a screen you glance at. Cutting back to the last separator gives
-    "Stötefalke" instead, which is what identifies the session anyway. Only
-    worth it when the boundary is not so early that the name loses its meaning,
-    hence the half-length floor; otherwise the hard slice stands.
+    Timo's rule: a shortened name must say that it is shortened. A bare slice
+    produces "Stötefalke - Webse", which reads as a typo on a screen you only
+    glance at; "Stötefalke…" reads as a name with more behind it.
+
+    A word boundary is preferred over cutting mid-word, but only when it
+    leaves something recognisable — "Privat - Clawdmeter" breaks at index 8
+    and yields "Privat…", which still identifies the session, while a boundary
+    two characters in would not.
     """
     if len(name) <= MAX_NAME_CHARS:
         return name
-    gekuerzt = name[:MAX_NAME_CHARS]
-    grenze = max(gekuerzt.rfind(" "), gekuerzt.rfind("-"))
-    if grenze >= MAX_NAME_CHARS // 2:
-        return gekuerzt[:grenze].rstrip(" -")
-    return gekuerzt.rstrip()
+
+    # One character goes to the ellipsis itself, so the result still fits.
+    rumpf = name[:MAX_NAME_CHARS - 1]
+    grenze = max(rumpf.rfind(" "), rumpf.rfind("-"))
+    if grenze >= MIN_NAME_REST_CHARS:
+        rumpf = rumpf[:grenze]
+    return rumpf.rstrip(" -") + ELLIPSE
 
 
 def _serialised_size(payload: dict) -> int:
-    return len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    # Must match how write_payload serialises, or the budget measures the wrong
+    # string. ensure_ascii=False is the point: "ö" costs two bytes as UTF-8 and
+    # six as an escape, and the firmware reads UTF-8 directly.
+    return len(json.dumps(payload, separators=(",", ":"),
+                          ensure_ascii=False).encode("utf-8"))
 
 
 def merge_into_payload(payload: dict, daten: dict | None) -> dict:

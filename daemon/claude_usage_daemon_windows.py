@@ -535,8 +535,16 @@ class Session:
     # either. Measured 2026-09-25: a 271-byte payload with five session names
     # failed seven times in a row on the no-response path.
     def _write_ohne_antwort_moeglich(self, groesse: int) -> bool:
-        mtu = getattr(self.client, "mtu_size", 0) or 0
-        return bool(mtu) and groesse <= mtu - 3
+        mtu = getattr(self.client, "mtu_size", 0)
+        # mtu_size kann fehlen (getattr-Default 0) ODER vorhanden, aber kein
+        # int sein — auf einem Test-Double ohne explizites mtu_size liefert
+        # AsyncMock/MagicMock ein Attrappen-Objekt statt 0, und ein Vergleich
+        # damit crasht statt False zu ergeben. In beiden Fällen ist die
+        # sichere Antwort dieselbe: kein verlässliches MTU -> Write MIT
+        # Antwort (sicherer Weg, siehe Kommentar oben), nicht abstürzen.
+        if not isinstance(mtu, int):
+            return False
+        return mtu > 0 and groesse <= mtu - 3
 
     async def write_payload(self, payload: dict) -> bool:
         if await self._sende(payload):
@@ -555,7 +563,11 @@ class Session:
         return await self._sende(ohne_sessions)
 
     async def _sende(self, payload: dict) -> bool:
-        data = json.dumps(payload, separators=(",", ":")).encode()
+        # ensure_ascii=False: umlauts travel as UTF-8, which the firmware
+        # reads directly and which costs two bytes instead of six per
+        # character. _serialised_size() in sessions_source must match this.
+        data = json.dumps(payload, separators=(",", ":"),
+                          ensure_ascii=False).encode("utf-8")
         log(f"Sending: {data.decode()}")
         try:
             await self.client.write_gatt_char(
@@ -844,6 +856,14 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         zuletzt_gesendet = dict(aktualisiert)
                         last_sessions_push = time.time()
                         consecutive_failures = 0
+                        # Auch das ist ein erfolgreicher Schreibvorgang. Ohne
+                        # dieses Flag meldet connect_and_run "nie erfolgreich
+                        # geschrieben", obwohl gerade Daten ankamen — und zwar
+                        # genau dann, wenn der erste Erfolg ueber diesen Takt
+                        # lief statt ueber den Minutenpoll, was beim Start der
+                        # Normalfall ist (last_sessions_push startet auf 0.0).
+                        # Der Fehler kam mit 040a21a, als dieser Takt entstand.
+                        used_successfully = True
                     else:
                         consecutive_failures += 1
                         if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
