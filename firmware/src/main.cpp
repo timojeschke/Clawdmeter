@@ -187,6 +187,63 @@ static void check_serial_cmd() {
 // reset line). Called exactly once at the start of setup().
 extern "C" void board_init(void);
 
+// ---- Side buttons: tap turns a page, hold sends the HID key ----
+// Putting two actions on one button costs BTN_HOLD_MS of latency before Space
+// starts. Push-to-talk is a hold gesture anyway, so the delay lands where it
+// is least noticed; a page turn fires on release and feels instant.
+#define BTN_HOLD_MS 250
+
+struct SideButton {
+    InputButton  id;
+    uint8_t      hid_key;
+    uint8_t      hid_mod;
+    void       (*on_tap)(void);
+    bool         was;
+    bool         hid_active;
+    bool         wake_swallowed;
+    uint32_t     down_ms;
+};
+
+// on_tap for the primary button is assigned in setup(): boards with only one
+// side button step forward, so a single button still reaches every page.
+static SideButton btn_primary   = { INPUT_BTN_PRIMARY,   0x2C, 0x00, nullptr,        false, false, false, 0 };
+static SideButton btn_secondary = { INPUT_BTN_SECONDARY, 0x2B, 0x02, ui_next_screen, false, false, false, 0 };
+
+// ble_keyboard_release() clears the whole HID report, so releasing one button
+// while the other is still held has to re-assert that one instead of going
+// silent. Only one key is carried at a time — holding both is not a gesture
+// this device offers.
+static void hid_refresh(void) {
+    if (btn_secondary.hid_active)    ble_keyboard_press(btn_secondary.hid_key, btn_secondary.hid_mod);
+    else if (btn_primary.hid_active) ble_keyboard_press(btn_primary.hid_key, btn_primary.hid_mod);
+    else                             ble_keyboard_release();
+}
+
+static void side_button_tick(SideButton& b) {
+    const bool     now_held = input_hal_is_held(b.id);
+    const uint32_t now      = millis();
+
+    if (now_held && !b.was) {
+        // Press edge. A press that wakes the panel is swallowed whole — no
+        // page turn, no keystroke — so waking never surprises the user.
+        b.down_ms = now;
+        b.wake_swallowed = idle_consume_wake_press();
+    } else if (!now_held && b.was) {
+        if (b.hid_active) {
+            b.hid_active = false;
+            hid_refresh();
+        } else if (!b.wake_swallowed && b.on_tap) {
+            b.on_tap();
+        }
+        b.wake_swallowed = false;
+    } else if (now_held && !b.hid_active && !b.wake_swallowed &&
+               now - b.down_ms >= BTN_HOLD_MS) {
+        b.hid_active = true;
+        ble_keyboard_press(b.hid_key, b.hid_mod);
+    }
+    b.was = now_held;
+}
+
 void setup() {
     Serial.begin(115200);
     delay(300);
@@ -227,6 +284,9 @@ void setup() {
 
     ble_init();
     input_hal_init();
+    // One side button means no "back" — stepping forward still reaches every
+    // page, it just always wraps the same way.
+    btn_primary.on_tap = (board_caps().button_count >= 2) ? ui_prev_screen : ui_next_screen;
 
     ui_init();
     ui_update_ble_status(ble_get_state(), ble_get_device_name(), ble_get_mac_address());
@@ -301,52 +361,21 @@ void loop() {
     if (!idle_is_asleep()) display_hal_tick();
 
     // ---- Physical buttons ----
-    //   PRIMARY   → HID Space  (Claude Code voice-mode PTT)
-    //   SECONDARY → HID Shift+Tab  (mode toggle; only if the board has one)
-    //   PWR       → on splash: cycle animations; on usage: cycle brightness;
-    //               hold ~3s + release: pairing mode
-    // First press from sleep is consumed as a wake-only event by
-    // idle_consume_wake_press(); the normal action fires from the second
-    // press. Activity bookkeeping happens inside idle_consume_wake_press
-    // so no separate idle_note_activity() call is needed here.
+    //   PRIMARY   → tap: page back (page forward on one-button boards)
+    //               hold: HID Space (Claude Code voice-mode PTT)
+    //   SECONDARY → tap: page forward · hold: HID Shift+Tab (mode toggle)
+    //   PWR       → tap: sleep now · hold ~3s + release: pairing mode
+    //               (the PMU still powers the device off at 8s)
+    //
+    // Cycling animations and brightness moved to a tap on the panel, where
+    // the action follows the page you are looking at — see global_click_cb()
+    // in ui.cpp. Nothing was dropped, only relocated.
     {
-        static bool primary_was = false;
-        static bool primary_wake_swallowed = false;
-        bool primary_now = input_hal_is_held(INPUT_BTN_PRIMARY);
-        if (primary_now != primary_was) {
-            if (primary_now) {
-                if (idle_consume_wake_press()) primary_wake_swallowed = true;
-                else                            ble_keyboard_press(0x2C, 0);  // HID Space, no mods
-            } else {
-                if (primary_wake_swallowed) primary_wake_swallowed = false;
-                else                        ble_keyboard_release();
-            }
-            primary_was = primary_now;
-        }
-
-        if (board_caps().button_count >= 2) {
-            static bool secondary_was = false;
-            static bool secondary_wake_swallowed = false;
-            bool secondary_now = input_hal_is_held(INPUT_BTN_SECONDARY);
-            if (secondary_now != secondary_was) {
-                if (secondary_now) {
-                    if (idle_consume_wake_press()) secondary_wake_swallowed = true;
-                    else                            ble_keyboard_press(0x2B, 0x02);  // HID Tab + LEFT_SHIFT
-                } else {
-                    if (secondary_wake_swallowed) secondary_wake_swallowed = false;
-                    else                          ble_keyboard_release();
-                }
-                secondary_was = secondary_now;
-            }
-        }
+        side_button_tick(btn_primary);
+        if (board_caps().button_count >= 2) side_button_tick(btn_secondary);
 
         if (power_hal_pwr_pressed()) {
-            if (!idle_consume_wake_press()) {
-                // On splash: cycle animations. On the usage view: cycle
-                // screen brightness (single non-splash view, no more screens).
-                if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
-                else                                          brightness_cycle();
-            }
+            if (!idle_consume_wake_press()) idle_sleep_now();
         }
 
         pair_tick();

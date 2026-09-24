@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "splash.h"
+#include "brightness.h"
 #include <lvgl.h>
 #include <time.h>
 #include "logo.h"
@@ -790,10 +791,14 @@ static void apply_battery_visibility(void) {
     }
 }
 
+// Tapping the panel used to flip between splash and usage. The side buttons
+// own page turns now, so the tap took over the two actions the PWR short-press
+// used to carry — kept rather than dropped, just moved to where they fit the
+// page you are looking at.
 static void global_click_cb(lv_event_t* e) {
     (void)e;
-    if (current_screen == SCREEN_SPLASH) ui_show_screen(prev_non_splash_screen);
-    else                                  ui_show_screen(SCREEN_SPLASH);
+    if (current_screen == SCREEN_SPLASH) splash_next();
+    else                                 brightness_cycle();
 }
 
 void ui_show_screen(screen_t screen) {
@@ -815,6 +820,14 @@ void ui_show_screen(screen_t screen) {
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
     apply_battery_visibility();
+}
+
+void ui_next_screen(void) {
+    ui_show_screen((screen_t)((current_screen + 1) % SCREEN_COUNT));
+}
+
+void ui_prev_screen(void) {
+    ui_show_screen((screen_t)((current_screen + SCREEN_COUNT - 1) % SCREEN_COUNT));
 }
 
 void ui_toggle_splash(void) {

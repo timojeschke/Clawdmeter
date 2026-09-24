@@ -20,3 +20,9 @@ bool idle_consume_wake_press(void);
 // sleeves, etc.). Callers use this to silently drop touch events while the
 // panel is dark.
 bool idle_is_asleep(void);
+
+// Sleep immediately instead of waiting out IDLE_TIMEOUT_MS — the PWR button's
+// short press. Unlike the timeout this also overrides the "stay awake on USB
+// power" rule, otherwise the very next idle_tick() would undo it while the
+// device sits on its charger. The override lasts until the next wake press.
+void idle_sleep_now(void);

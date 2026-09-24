@@ -5,21 +5,24 @@
 A small ESP32 dashboard I made for my desk to keep an eye on Claude Code usage.
 
 It runs on a [Waveshare ESP32-S3-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-s3-touch-amoled-2.16.htm?&aff_id=149786) as well as a few other alternative boards and pairs over Bluetooth, the splash screen plays pixel-art Clawd animations that get
-busier when your usage rate climbs. The two side buttons send Space and
-Shift+Tab over BLE HID for Claude Code's voice mode and mode-toggle shortcuts.
+busier when your usage rate climbs. The two side buttons turn pages on a tap
+and send Space or Shift+Tab over BLE HID when held, for Claude Code's voice
+mode and mode-toggle shortcuts.
 
 <img width="1179" height="994" alt="Usage meter" src="https://github.com/user-attachments/assets/83e54aea-0932-428f-94aa-b3ede3a360aa" />
 
 ## Screens
 
-The device boots into the splash. Tap the screen anywhere to switch to the Usage view; tap again to flip back to the splash.
+The screens form a carousel. **Tap a side button to turn the page**, wrapping at both ends; a board with only one side button steps forward and still reaches every page.
 
 |              Splash               |              Usage              |
 | :-------------------------------: | :-----------------------------: |
 | ![Splash](screenshots/splash.gif) | ![Usage](screenshots/usage.png) |
-|   Splash; touch-toggle anytime    | Session and weekly utilization  |
+|     Splash; side buttons page     | Session and weekly utilization  |
 
-While the splash is up, the middle (PWR) button cycles animations. **Hold the power button for 3 seconds, then release, to put the device into pairing mode** — this clears the saved Bluetooth bond and re-advertises. The firmware also auto-rotates animations every 20 s within the current usage-rate group, so a long stretch on the splash isn't just one Clawd on loop.
+**Tapping the panel acts on the page you are looking at**: on the splash it cycles to the next animation, on the usage view it steps through the four brightness levels. The firmware also auto-rotates animations every 20 s within the current usage-rate group, so a long stretch on the splash isn't just one Clawd on loop.
+
+**A short press of the middle (PWR) button puts the panel to sleep right away** instead of waiting out the idle timeout — and it stays asleep even on USB power, until you press something. **Hold the power button for about 3 seconds, then release, to enter pairing mode** — this clears the saved Bluetooth bond and re-advertises. Keep holding past ~6 s and the gesture disarms; the PMU cuts power at 8 s, so a deliberate power-off never wipes the bond.
 
 ## Hardware
 
@@ -199,19 +202,36 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
 4. The daemon connects to the ESP32 over BLE and writes a JSON payload to the GATT RX characteristic.
 5. The firmware parses it and updates the LVGL dashboard.
 6. The firmware also tracks the rate of change of session % over a 5-minute window and picks splash animations from the matching mood group.
-7. The two side buttons are independent of all of this — they send Space and Shift+Tab as BLE HID keyboard input to the paired host directly.
+7. The HID side of the side buttons is independent of all of this — Space and Shift+Tab go straight to the paired host as keyboard input.
 
 ## Physical buttons
 
-The board has three side buttons. Left and right send HID keys; the middle (PWR) button cycles splash animations and, held for 3 seconds, triggers pairing mode.
+Each side button carries two actions: **tap to turn a page, hold to send its HID key.** The threshold is 250 ms, which is also how long Space is delayed — the price of one button doing two jobs. Push-to-talk is a hold gesture anyway, so that is where the delay hurts least.
 
-| Button           | GPIO         | Function                                                     |
-| ---------------- | ------------ | ------------------------------------------------------------ |
-| **Left**         | GPIO 0       | Hold to send Space (Claude Code voice-mode push-to-talk)     |
-| **Middle** (PWR) | AXP2101 PKEY | On splash: cycle animations. Hold 3s + release: pairing mode |
-| **Right**        | GPIO 18      | Press to send Shift+Tab (Claude Code mode toggle)            |
+| Button           | Tap                        | Hold                                              |
+| ---------------- | -------------------------- | ------------------------------------------------- |
+| **Left**         | Previous page              | Space (Claude Code voice-mode push-to-talk)       |
+| **Right**        | Next page                  | Shift+Tab (Claude Code mode toggle)               |
+| **Middle** (PWR) | Sleep now                  | ~3 s + release: pairing mode · 8 s: power off     |
 
-Space and Shift+Tab go out as standard BLE HID keyboard reports, so they trigger in whatever window has focus on the paired host — not just Claude Code.
+Space and Shift+Tab go out as standard BLE HID keyboard reports, so they trigger in whatever window has focus on the paired host — not just Claude Code. **They only work while the device is connected**; with no bond, the side buttons still turn pages but send nothing.
+
+The first press after the panel has gone dark is swallowed as a wake — no page turn, no keystroke.
+
+### Not every board has three buttons
+
+The table above describes the AMOLED-2.16. The other ports differ, and shared code adapts via `BoardCaps::button_count`:
+
+| Board                        | Side buttons        | Shift+Tab? |
+| ---------------------------- | ------------------- | ---------- |
+| AMOLED-2.16 (S3)             | 2 (GPIO 0 / 18)     | yes        |
+| AMOLED-2.16 (C6)             | 2 (GPIO 9 / 10)     | yes        |
+| LCD-1.54                     | 2 (GPIO 0 / 5)      | yes        |
+| AMOLED-1.8 (S3 and C6)       | 1                   | no         |
+| AMOLED-2.06                  | 1                   | no         |
+| LCD-4                        | 1, and no PWR       | no         |
+
+**On one-button boards the single button steps forward only** — it still reaches every page, it just always wraps the same way. The LCD-4 has no PWR button at all (KEY is wired to hardware reset), so sleep-on-demand and the pairing gesture are unavailable there; tap the panel instead.
 
 ## BLE protocol
 
