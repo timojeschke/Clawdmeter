@@ -169,3 +169,33 @@ def test_die_auslastungsfelder_ueberleben_das_zusammenfuehren():
     r = merge_into_payload(BASIS, _stand(["A"]))
     for k, v in BASIS.items():
         assert r[k] == v
+
+
+# --- Diagnose der Ratelimit-Header ----------------------------------------
+
+def test_unbekannte_ratelimit_header_werden_gemeldet(capsys, monkeypatch):
+    # Beantwortet empirisch, ob es ein eigenes Wochenlimit je Modell gibt,
+    # ohne dass jemand Zugangsdaten anfassen muss.
+    import daemon.claude_usage_daemon_windows as d
+
+    monkeypatch.setattr(d, "_ratelimit_header_gemeldet", False)
+    d.report_unknown_ratelimit_headers({
+        "anthropic-ratelimit-unified-5h-utilization": "0.4",
+        "anthropic-ratelimit-unified-opus-7d-utilization": "0.9",
+        "content-type": "application/json",
+    })
+    ausgabe = capsys.readouterr().out
+    assert "anthropic-ratelimit-unified-opus-7d-utilization" in ausgabe
+    # Werte sind Kontodaten und gehoeren nicht ins Log.
+    assert "0.9" not in ausgabe
+
+
+def test_meldung_erfolgt_nur_einmal(capsys, monkeypatch):
+    import daemon.claude_usage_daemon_windows as d
+
+    monkeypatch.setattr(d, "_ratelimit_header_gemeldet", False)
+    kopf = {"anthropic-ratelimit-neu-utilization": "1"}
+    d.report_unknown_ratelimit_headers(kopf)
+    capsys.readouterr()
+    d.report_unknown_ratelimit_headers(kopf)
+    assert capsys.readouterr().out == ""

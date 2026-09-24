@@ -198,6 +198,46 @@ def add_clock_fields(payload: dict) -> None:
     payload["tf"] = tf
 
 
+# The daemon reads two utilization headers today. Whether the API also reports a
+# separate weekly limit per model family (an Opus/Fable quota distinct from the
+# unified 7-day one) is not documented anywhere we can check — so instead of
+# guessing a header name, log whatever rate-limit headers actually arrive, once.
+# One real response answers the question; a second run stays quiet.
+_BEKANNTE_RATELIMIT_HEADER = frozenset({
+    "anthropic-ratelimit-unified-5h-utilization",
+    "anthropic-ratelimit-unified-5h-reset",
+    "anthropic-ratelimit-unified-5h-status",
+    "anthropic-ratelimit-unified-7d-utilization",
+    "anthropic-ratelimit-unified-7d-reset",
+    "anthropic-ratelimit-unified-status",
+    "anthropic-ratelimit-unified-overage-utilization",
+    "anthropic-ratelimit-unified-overage-reset",
+})
+_ratelimit_header_gemeldet = False
+
+
+def report_unknown_ratelimit_headers(headers) -> None:
+    """Log rate-limit headers we do not already consume — once per process.
+
+    Only header NAMES are logged, never their values: a utilization figure is
+    account data and has no business in a log file.
+    """
+    global _ratelimit_header_gemeldet
+    if _ratelimit_header_gemeldet:
+        return
+    _ratelimit_header_gemeldet = True
+
+    unbekannt = sorted(
+        name for name in headers
+        if name.lower().startswith("anthropic-ratelimit-")
+        and name.lower() not in _BEKANNTE_RATELIMIT_HEADER
+    )
+    if unbekannt:
+        log(f"Additional rate-limit headers seen (names only): {', '.join(unbekannt)}")
+    else:
+        log("No rate-limit headers beyond the ones already used.")
+
+
 async def add_session_fields(payload: dict) -> dict:
     """Merge remote Claude Code session states into the usage payload.
 
@@ -239,6 +279,8 @@ async def poll_api(token: str) -> dict | None:
 
     def hdr(name: str, default: str = "0") -> str:
         return resp.headers.get(name, default)
+
+    report_unknown_ratelimit_headers(resp.headers)
 
     now = time.time()
 

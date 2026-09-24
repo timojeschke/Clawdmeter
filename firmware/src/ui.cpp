@@ -53,8 +53,11 @@ struct Layout {
     int16_t logo_y;                  // logo top edge
     int16_t batt_y;                  // battery icon top edge
     int16_t batt_w;                  // battery icon width, for position math
-    const lv_font_t* batt_font;      // battery percentage beside the icon
-    int16_t batt_lbl_gap;            // gap between percentage and icon
+    const lv_font_t* batt_font;      // battery percentage
+    int16_t batt_lbl_gap;            // gap when the percentage sits beside it
+    int16_t batt_h;                  // battery body height
+    int16_t batt_nub_w, batt_nub_h;  // the little contact stub on the right
+    bool    batt_inside;             // percentage inside the body, or beside it
 
     // Pairing hint / idle screen
     int16_t pair_y1, pair_y2, pair_y3;
@@ -99,9 +102,16 @@ static void compute_layout(const BoardCaps& c) {
     L.small_icons = false;
     L.title_nudge = 16;
     L.logo_y = L.title_y - 10;
-    L.batt_y = L.title_y;
-    L.batt_w = ICON_BATTERY_W;
-    L.batt_font = &font_styrene_20;
+    // Centred where the 48 px icon's centre used to be, so the header keeps
+    // its balance against the logo on the left.
+    L.batt_y = L.title_y + 13;
+    // Same footprint the 48 px icon occupied: 42 body + 1 gap + 4 nub + slack.
+    L.batt_w = 42;
+    L.batt_h = 22;
+    L.batt_nub_w = 4;
+    L.batt_nub_h = 10;
+    L.batt_inside = true;
+    L.batt_font = &font_styrene_12;
     L.batt_lbl_gap = 6;
     L.pair_y1 = 40;
     L.pair_y2 = 120;
@@ -165,8 +175,14 @@ static void compute_layout(const BoardCaps& c) {
         L.small_icons = true;
         L.title_nudge = 8;
         L.logo_y = 2;
-        L.batt_y = 10;
-        L.batt_w = ICON_BATTERY_SMALL_W;
+        L.batt_y = 16;   // same centre the 24 px icon had
+        // At this size the interior is ~7 px tall — no font is legible in
+        // there, so the number stays beside the battery on small screens.
+        L.batt_w = 20;
+        L.batt_h = 11;
+        L.batt_nub_w = 2;
+        L.batt_nub_h = 5;
+        L.batt_inside = false;
         L.batt_font = &font_styrene_12;
         L.batt_lbl_gap = 3;
         L.pair_y1 = 12;
@@ -225,10 +241,21 @@ static lv_obj_t* lbl_spending_status = nullptr;   // "Under pace" / "On pace" / 
 static lv_obj_t* lbl_anim;      // status line: connection state + whimsical idle
 
 // ---- Battery indicator (shared, on top) ----
-static lv_obj_t* battery_img;
-static lv_obj_t* battery_lbl;   // charge percentage, left of the icon
+// ---- Battery indicator: drawn, not an icon ----
+// The Lucide battery glyph fills its interior with level bars, so a number
+// placed inside would sit on top of them. Drawing the battery ourselves frees
+// the interior for the percentage — the way phones show it — and lets the fill
+// take its colour from theme.h instead of being baked into an image.
+#define BATT_BORDER_W  2
+#define BATT_NUB_GAP   1
+#define BATT_LOW_PCT  10   // below this the fill turns red
+#define BATT_FILL_OPA LV_OPA_50   // dimmed so the number stays readable on top
+
+static lv_obj_t* battery_body;
+static lv_obj_t* battery_fill;
+static lv_obj_t* battery_nub;
+static lv_obj_t* battery_lbl;
 static lv_obj_t* logo_img;
-static lv_image_dsc_t battery_dscs[5];  // empty, low, medium, full, charging
 
 // ---- Live-data freshness → which usage sub-view to show ----
 // usage panels when data is flowing, an idle "Zzz" screen when the host is
@@ -378,21 +405,54 @@ static lv_obj_t* make_pill(lv_obj_t* parent, const char* text) {
     return lbl;
 }
 
-static void init_battery_icons(void) {
-    if (L.small_icons) {
-        init_icon_dsc_rgb565a8(&battery_dscs[0], ICON_BATTERY_SMALL_W, ICON_BATTERY_SMALL_H, icon_battery_small_data);
-        init_icon_dsc_rgb565a8(&battery_dscs[1], ICON_BATTERY_LOW_SMALL_W, ICON_BATTERY_LOW_SMALL_H, icon_battery_low_small_data);
-        init_icon_dsc_rgb565a8(&battery_dscs[2], ICON_BATTERY_MEDIUM_SMALL_W, ICON_BATTERY_MEDIUM_SMALL_H, icon_battery_medium_small_data);
-        init_icon_dsc_rgb565a8(&battery_dscs[3], ICON_BATTERY_FULL_SMALL_W, ICON_BATTERY_FULL_SMALL_H, icon_battery_full_small_data);
-        init_icon_dsc_rgb565a8(&battery_dscs[4], ICON_BATTERY_CHARGING_SMALL_W, ICON_BATTERY_CHARGING_SMALL_H, icon_battery_charging_small_data);
-        return;
-    }
-    init_icon_dsc_rgb565a8(&battery_dscs[0], ICON_BATTERY_W, ICON_BATTERY_H, icon_battery_data);
-    init_icon_dsc_rgb565a8(&battery_dscs[1], ICON_BATTERY_LOW_W, ICON_BATTERY_LOW_H, icon_battery_low_data);
-    init_icon_dsc_rgb565a8(&battery_dscs[2], ICON_BATTERY_MEDIUM_W, ICON_BATTERY_MEDIUM_H, icon_battery_medium_data);
-    init_icon_dsc_rgb565a8(&battery_dscs[3], ICON_BATTERY_FULL_W, ICON_BATTERY_FULL_H, icon_battery_full_data);
-    init_icon_dsc_rgb565a8(&battery_dscs[4], ICON_BATTERY_CHARGING_W, ICON_BATTERY_CHARGING_H, icon_battery_charging_data);
+// Builds the battery out of primitives: body, fill, contact stub, number.
+// Right-aligned as a unit so the stub lands where the old icon's edge was.
+static void battery_create(lv_obj_t* parent) {
+    // Boards without battery telemetry never show the indicator (per the HAL
+    // contract; previously every board drew the empty-battery glyph).
+    if (!board_caps().has_battery) return;
+
+    const int16_t total_w = L.batt_w + BATT_NUB_GAP + L.batt_nub_w;
+    const int16_t body_x  = L.scr_w - L.margin - total_w;
+
+    battery_body = lv_obj_create(parent);
+    lv_obj_remove_style_all(battery_body);
+    lv_obj_clear_flag(battery_body, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(battery_body, L.batt_w, L.batt_h);
+    lv_obj_set_pos(battery_body, body_x, L.batt_y);
+    lv_obj_set_style_radius(battery_body, L.batt_h / 3, 0);
+    lv_obj_set_style_border_width(battery_body, BATT_BORDER_W, 0);
+    lv_obj_set_style_border_color(battery_body, THEME_TEXT, 0);
+
+    // Width is set per update; height and position are fixed.
+    battery_fill = lv_obj_create(battery_body);
+    lv_obj_remove_style_all(battery_fill);
+    lv_obj_clear_flag(battery_fill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_height(battery_fill, L.batt_h - 2 * BATT_BORDER_W);
+    lv_obj_align(battery_fill, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_radius(battery_fill, (L.batt_h / 3) - BATT_BORDER_W, 0);
+    lv_obj_set_style_bg_opa(battery_fill, BATT_FILL_OPA, 0);
+
+    battery_nub = lv_obj_create(parent);
+    lv_obj_remove_style_all(battery_nub);
+    lv_obj_clear_flag(battery_nub, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(battery_nub, L.batt_nub_w, L.batt_nub_h);
+    lv_obj_set_pos(battery_nub, body_x + L.batt_w + BATT_NUB_GAP,
+                   L.batt_y + (L.batt_h - L.batt_nub_h) / 2);
+    lv_obj_set_style_radius(battery_nub, 1, 0);
+    lv_obj_set_style_bg_opa(battery_nub, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(battery_nub, THEME_TEXT, 0);
+
+    // Inside the body on large screens, beside it on small ones where the
+    // interior is too short for any legible font. ui_update_battery() places
+    // the outside variant, because its width changes with the digit count.
+    battery_lbl = lv_label_create(L.batt_inside ? battery_body : parent);
+    lv_obj_set_style_text_font(battery_lbl, L.batt_font, 0);
+    lv_obj_set_style_text_color(battery_lbl, L.batt_inside ? THEME_TEXT : THEME_DIM, 0);
+    lv_label_set_text(battery_lbl, "");
+    if (L.batt_inside) lv_obj_center(battery_lbl);
 }
+
 
 // ======== Usage Screen ========
 
@@ -562,7 +622,6 @@ void ui_init(void) {
     if (L.small_icons) init_icon_dsc_rgb565a8(&logo_dsc, CLAWD_STILL_SMALL_W, CLAWD_STILL_SMALL_H, clawd_still_small_data);
     else               init_icon_dsc_rgb565a8(&logo_dsc, CLAWD_STILL_W, CLAWD_STILL_H, clawd_still_data);
 #endif
-    init_battery_icons();
 
     init_usage_screen(scr);
     splash_init(scr);
@@ -587,26 +646,7 @@ void ui_init(void) {
 #endif
     }
 
-    battery_img = lv_image_create(scr);
-    lv_image_set_src(battery_img, &battery_dscs[0]);
-    lv_obj_set_pos(battery_img, L.scr_w - L.batt_w - L.margin, L.batt_y);
-
-    // Percentage beside the icon. Positioned by ui_update_battery() rather
-    // than here, because the label resizes with the text ("9%" vs "100%")
-    // and lv_obj_align_to() is a one-shot placement.
-    battery_lbl = lv_label_create(scr);
-    lv_obj_set_style_text_font(battery_lbl, L.batt_font, 0);
-    lv_obj_set_style_text_color(battery_lbl, THEME_DIM, 0);
-    lv_label_set_text(battery_lbl, "");
-
-    // Boards without battery telemetry never show the indicator (per the HAL
-    // contract; previously every board drew the empty-battery glyph).
-    if (!board_caps().has_battery) {
-        lv_obj_del(battery_img);
-        battery_img = nullptr;
-        lv_obj_del(battery_lbl);
-        battery_lbl = nullptr;
-    }
+    battery_create(scr);
 }
 
 void ui_update(const UsageData* data) {
@@ -777,17 +817,19 @@ void ui_tick_anim(void) {
 
 static screen_t prev_non_splash_screen = SCREEN_USAGE;
 static void apply_battery_visibility(void) {
-    if (!battery_img) return;
+    if (!battery_body) return;
+    // On the splash the whole indicator gets out of the way of the artwork.
     const bool hide = (current_screen == SCREEN_SPLASH);
-    if (hide) lv_obj_add_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
-    else      lv_obj_clear_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
-    if (!battery_lbl) return;
-    // The label also stays hidden when the percentage is unknown (-1), which
-    // ui_update_battery() signals by clearing its text.
-    if (hide || lv_label_get_text(battery_lbl)[0] == '\0') {
+    lv_obj_t* teile[] = { battery_body, battery_nub, battery_lbl };
+    for (lv_obj_t* teil : teile) {
+        if (!teil) continue;
+        if (hide) lv_obj_add_flag(teil, LV_OBJ_FLAG_HIDDEN);
+        else      lv_obj_clear_flag(teil, LV_OBJ_FLAG_HIDDEN);
+    }
+    // An unknown charge (-1) leaves the number blank; the empty body still
+    // shows, so the indicator does not vanish without explanation.
+    if (battery_lbl && lv_label_get_text(battery_lbl)[0] == '\0') {
         lv_obj_add_flag(battery_lbl, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_clear_flag(battery_lbl, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -850,31 +892,33 @@ void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) 
 }
 
 void ui_update_battery(int percent, bool charging) {
-    if (!battery_img) return;
-    int idx;
-    if (charging) {
-        idx = 4;
-    } else if (percent < 0) {
-        idx = 0;
-    } else if (percent <= 10) {
-        idx = 0;
-    } else if (percent <= 35) {
-        idx = 1;
-    } else if (percent <= 75) {
-        idx = 2;
-    } else {
-        idx = 3;
-    }
-    lv_image_set_src(battery_img, &battery_dscs[idx]);
+    if (!battery_body) return;
+
+    const int16_t innen = L.batt_w - 2 * BATT_BORDER_W;
+    const int pct = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
+
+    // Round up so that 1% still draws a visible sliver rather than nothing.
+    int16_t fuellung = (int16_t)((innen * pct + 99) / 100);
+    if (pct > 0 && fuellung < 1) fuellung = 1;
+    lv_obj_set_width(battery_fill, fuellung);
+
+    lv_color_t farbe = THEME_TEXT;
+    if (charging)                 farbe = THEME_GREEN;
+    else if (pct <= BATT_LOW_PCT) farbe = THEME_RED;
+    lv_obj_set_style_bg_color(battery_fill, farbe, 0);
 
     if (battery_lbl) {
         if (percent < 0) {
             lv_label_set_text(battery_lbl, "");
+        } else if (L.batt_inside) {
+            // No percent sign inside — the battery outline already says what
+            // the number means, and the glyph would cost a third of the room.
+            lv_label_set_text_fmt(battery_lbl, "%d", percent);
         } else {
             lv_label_set_text_fmt(battery_lbl, "%d%%", percent);
-            // Re-align on every update: the label's width changes with the
-            // digit count, and lv_obj_align_to() does not track that.
-            lv_obj_align_to(battery_lbl, battery_img,
+            // Re-align on every update: the label width changes with the
+            // digit count and lv_obj_align_to() is a one-shot placement.
+            lv_obj_align_to(battery_lbl, battery_body,
                             LV_ALIGN_OUT_LEFT_MID, -L.batt_lbl_gap, 0);
         }
     }
