@@ -65,6 +65,10 @@ RECONNECT_BACKOFF_CAP = 8  # D-05: fast-reconnect cap (seconds); keeps stacked r
 CONFIG_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Clawdmeter" / "config"
 
 API_URL = "https://api.anthropic.com/v1/messages"
+# Scoped weekly limits (e.g. a per-model quota) are NOT in the rate-limit
+# response headers — measured, they are all "unified-*". They live behind this
+# endpoint, which is what Claude Code's own settings view reads.
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 API_HEADERS_TEMPLATE = {
     "anthropic-version": "2023-06-01",
     "anthropic-beta": "oauth-2025-04-20",
@@ -258,6 +262,41 @@ async def add_session_fields(payload: dict) -> dict:
     async with httpx.AsyncClient() as http:
         state = await fetch_sessions(http, url, token)
     return merge_into_payload(payload, state)
+
+
+async def poll_scoped_limit(token: str) -> tuple[str, int] | None:
+    """The per-model weekly limit, as (display name, percent), or None.
+
+    Returns None on any failure and on the absence of a scoped limit — this is
+    an extra reading and must never cost the device its usage numbers.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(USAGE_URL, headers={
+                "Authorization": f"Bearer {token}",
+                "anthropic-beta": "oauth-2025-04-20",
+                "User-Agent": "claude-code/2.1.5",
+                "Accept": "application/json",
+            })
+    except httpx.HTTPError as e:
+        log(f"usage endpoint failed: {e}")
+        return None
+    if resp.status_code != 200:
+        log(f"usage endpoint HTTP {resp.status_code}")
+        return None
+    try:
+        daten = resp.json()
+    except ValueError:
+        return None
+
+    for eintrag in daten.get("limits") or []:
+        if not isinstance(eintrag, dict) or eintrag.get("kind") != "weekly_scoped":
+            continue
+        modell = ((eintrag.get("scope") or {}).get("model") or {}).get("display_name")
+        prozent = eintrag.get("percent")
+        if modell and isinstance(prozent, (int, float)):
+            return str(modell), int(round(prozent))
+    return None
 
 
 async def poll_api(token: str) -> dict | None:
@@ -714,6 +753,11 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                             tray_state.set_error("token expired — run claude login")
                         payload = None
                     if payload is not None:
+                        # Only on the slow beat: this is a second HTTP call and
+                        # a weekly figure does not move between two 10 s ticks.
+                        scoped = await poll_scoped_limit(token)
+                        if scoped:
+                            payload["fn"], payload["fp"] = scoped[0][:10], scoped[1]
                         letzte_nutzlast = dict(payload)
                         payload = await add_session_fields(payload)
                         if await session.write_payload(payload):

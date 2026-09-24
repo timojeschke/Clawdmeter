@@ -258,7 +258,8 @@ static lv_obj_t* panel_weekly = nullptr;
 static lv_obj_t* lbl_session_pct_sym = nullptr;  // "%" in smaller font
 static lv_obj_t* lbl_spending_desc = nullptr;     // "of your monthly budget"
 static lv_obj_t* lbl_spending_status = nullptr;   // "Under pace" / "On pace" / "Over pace"
-static lv_obj_t* lbl_anim;      // status line: connection state + whimsical idle
+static lv_obj_t* lbl_anim;
+static lv_obj_t* lbl_scoped;    // per-model weekly quota, replaces the idle line      // status line: connection state + whimsical idle
 
 // ---- Battery indicator (shared, on top) ----
 // ---- Battery indicator: drawn, not an icon ----
@@ -805,6 +806,16 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_font(lbl_anim, L.anim_font, 0);
     lv_obj_set_style_text_color(lbl_anim, COL_ACCENT, 0);
     lv_obj_align(lbl_anim, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
+
+    // Same slot as the animated status line — one or the other is visible,
+    // never both. Quieter than the accent line it replaces: this is a figure
+    // to glance at, not something asking for attention.
+    lbl_scoped = lv_label_create(usage_container);
+    lv_label_set_text(lbl_scoped, "");
+    lv_obj_set_style_text_font(lbl_scoped, L.reset_font, 0);
+    lv_obj_set_style_text_color(lbl_scoped, COL_DIM, 0);
+    lv_obj_align(lbl_scoped, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
+    lv_obj_add_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
 }
 
 // ======== Public API ========
@@ -851,6 +862,18 @@ void ui_init(void) {
 
 void ui_update(const UsageData* data) {
     if (!data->valid) return;
+    // A real number beats a decorative status line: when the account has a
+    // per-model weekly quota, it takes that slot instead.
+    if (lbl_scoped) {
+        if (data->scoped_valid) {
+            lv_label_set_text_fmt(lbl_scoped, "%s  %d%%", data->scoped_name, data->scoped_pct);
+            lv_obj_clear_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
+            if (lbl_anim) lv_obj_add_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
+            if (lbl_anim) lv_obj_clear_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
     update_sessions_screen(data);
     data_ok = data->ok;
     if (!data->ok) return;          // a {"ok":false} "no data" beat → fall through to idle, keep last numbers
