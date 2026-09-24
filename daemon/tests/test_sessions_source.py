@@ -172,11 +172,28 @@ def test_die_auslastungsfelder_ueberleben_das_zusammenfuehren():
 
 
 # --- Diagnose der Ratelimit-Header ----------------------------------------
+#
+# Diese beiden Tests importieren den Windows-Daemon, der `bleak` braucht — den
+# Bluetooth-Stapel, den es nur auf Timos PC gibt, nicht auf dem Linux-Server.
+# Dort werden sie uebersprungen statt rot zu laufen: ein Fehlschlag, der nur
+# "hier fehlt eine Bibliothek" bedeutet, bringt einem bei, rote Tests zu
+# ignorieren. Auf dem PC laufen sie regulaer mit.
+try:
+    import daemon.claude_usage_daemon_windows as windows_daemon
+except ImportError:                      # bleak fehlt
+    windows_daemon = None
 
+nur_mit_bleak = pytest.mark.skipif(
+    windows_daemon is None,
+    reason="benoetigt bleak (nur auf dem Windows-PC vorhanden)",
+)
+
+
+@nur_mit_bleak
 def test_unbekannte_ratelimit_header_werden_gemeldet(capsys, monkeypatch):
     # Beantwortet empirisch, ob es ein eigenes Wochenlimit je Modell gibt,
     # ohne dass jemand Zugangsdaten anfassen muss.
-    import daemon.claude_usage_daemon_windows as d
+    d = windows_daemon
 
     monkeypatch.setattr(d, "_ratelimit_header_gemeldet", False)
     d.report_unknown_ratelimit_headers({
@@ -190,8 +207,9 @@ def test_unbekannte_ratelimit_header_werden_gemeldet(capsys, monkeypatch):
     assert "0.9" not in ausgabe
 
 
+@nur_mit_bleak
 def test_meldung_erfolgt_nur_einmal(capsys, monkeypatch):
-    import daemon.claude_usage_daemon_windows as d
+    d = windows_daemon
 
     monkeypatch.setattr(d, "_ratelimit_header_gemeldet", False)
     kopf = {"anthropic-ratelimit-neu-utilization": "1"}
