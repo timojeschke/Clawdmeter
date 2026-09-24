@@ -281,10 +281,21 @@ void setup() {
     idle_init();        // takes over panel brightness and starts the idle timer
     brightness_init();  // load the user's saved brightness level and apply via idle
 
+    // Startdiagnose für eine ungeklärte I2C-Meldung
+    // (i2cWrite ESP_ERR_INVALID_STATE, ~1007 ms, direkt nach der Helligkeit).
+    // Sie tritt sporadisch auf, bleibt folgenlos — Touch und IMU melden danach
+    // beide OK — und liess sich aus der Ferne nicht zuordnen. Diese vier Zeilen
+    // sagen im Startprotokoll, WELCHER der drei I2C-Teilnehmer sie auslöst.
+    // Dürfen wieder raus, sobald das geklärt ist.
+    Serial.println("init: power");
     power_hal_init();
+    Serial.println("init: imu");
     imu_hal_init();
+    Serial.println("init: sound");
     sound_hal_init();
+    Serial.println("init: touch");
     touch_hal_init();
+    Serial.println("init: fertig");
 
     // ---- LVGL ----
     const int W = board_caps().width;
