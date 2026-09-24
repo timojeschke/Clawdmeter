@@ -104,14 +104,16 @@ static void compute_layout(const BoardCaps& c) {
     L.logo_y = L.title_y - 10;
     // Centred where the 48 px icon's centre used to be, so the header keeps
     // its balance against the logo on the left.
-    L.batt_y = L.title_y + 13;
-    // Same footprint the 48 px icon occupied: 42 body + 1 gap + 4 nub + slack.
-    L.batt_w = 42;
-    L.batt_h = 22;
-    L.batt_nub_w = 4;
-    L.batt_nub_h = 10;
+    L.batt_y = L.title_y + 9;
+    // Deliberately larger than the 48 px icon it replaced: at arm's length on
+    // a desk the number has to be readable at a glance, and the header has the
+    // room. Only one weight of Styrene ships, so "heavier" means a larger size.
+    L.batt_w = 58;
+    L.batt_h = 30;
+    L.batt_nub_w = 5;
+    L.batt_nub_h = 14;
     L.batt_inside = true;
-    L.batt_font = &font_styrene_12;
+    L.batt_font = &font_styrene_20;
     L.batt_lbl_gap = 6;
     L.pair_y1 = 40;
     L.pair_y2 = 120;
@@ -220,7 +222,10 @@ static lv_obj_t* usage_container;
 static lv_obj_t* sessions_container;
 static lv_obj_t* sess_count_lbl[3];     // waiting / working / parked
 static lv_obj_t* sess_name_lbl[SESSIONS_MAX_NAMES];
+static lv_obj_t* sess_list_panel;       // card holding the waiting sessions
 static lv_obj_t* sess_more_lbl;         // "+N more" when the list was trimmed
+static int16_t   sess_row_h;            // row pitch, for resizing the card
+static int16_t   sess_first_row_y;      // y of the first name inside the card
 static lv_obj_t* sess_hint_lbl;         // shown when no session data has arrived
 static lv_obj_t* lbl_title;
 // Clock fed by the daemon: base epoch (local wall-clock seconds) + the lv_tick at
@@ -603,26 +608,44 @@ static void init_sessions_screen(lv_obj_t* scr) {
                                                beschriftung[i], farbe[i]);
     }
 
-    // Names of the waiting sessions, one per line below the counts.
+    // The waiting sessions, in a card of their own — the same rounded panel
+    // the usage screen uses, so the page reads as one design rather than a
+    // stat block with loose text under it. Only the waiting ones are listed:
+    // running and parked sessions ask nothing of anyone.
     const int16_t liste_y = L.content_y + zahlen_h + L.usage_panel_gap;
-    const int16_t zeile_h = L.reset_font->line_height + 2;
+    const int16_t zeile_h = L.reset_font->line_height + 4;
+
+    sess_list_panel = make_panel(sessions_container, L.margin, liste_y,
+                                 L.content_w, zeile_h * 2);
+
+    lv_obj_t* ueberschrift = lv_label_create(sess_list_panel);
+    lv_obj_set_style_text_font(ueberschrift, L.pace_font, 0);
+    lv_obj_set_style_text_color(ueberschrift, COL_DIM, 0);
+    lv_label_set_text(ueberschrift, "Waiting for input");
+    lv_obj_set_pos(ueberschrift, 0, 0);
+    const int16_t erste_zeile = L.pace_font->line_height + 6;
+
     for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
-        sess_name_lbl[i] = lv_label_create(sessions_container);
+        sess_name_lbl[i] = lv_label_create(sess_list_panel);
         lv_obj_set_style_text_font(sess_name_lbl[i], L.reset_font, 0);
         lv_obj_set_style_text_color(sess_name_lbl[i], COL_TEXT, 0);
         lv_label_set_long_mode(sess_name_lbl[i], LV_LABEL_LONG_DOT);
-        lv_obj_set_width(sess_name_lbl[i], L.content_w);
-        lv_obj_set_pos(sess_name_lbl[i], L.margin, liste_y + i * zeile_h);
+        lv_obj_set_width(sess_name_lbl[i], L.content_w - 2 * L.panel_pad_x);
+        lv_obj_set_pos(sess_name_lbl[i], 0, erste_zeile + i * zeile_h);
         lv_label_set_text(sess_name_lbl[i], "");
         lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    sess_more_lbl = lv_label_create(sessions_container);
-    lv_obj_set_style_text_font(sess_more_lbl, L.reset_font, 0);
+    sess_more_lbl = lv_label_create(sess_list_panel);
+    lv_obj_set_style_text_font(sess_more_lbl, L.pace_font, 0);
     lv_obj_set_style_text_color(sess_more_lbl, COL_DIM, 0);
-    lv_obj_set_pos(sess_more_lbl, L.margin, liste_y + SESSIONS_MAX_NAMES * zeile_h);
+    lv_obj_set_pos(sess_more_lbl, 0, erste_zeile);
     lv_label_set_text(sess_more_lbl, "");
     lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    // Row geometry the update pass needs to resize the card to its content.
+    sess_row_h = zeile_h;
+    sess_first_row_y = erste_zeile;
 
     // Shown instead of three zeros when nothing has arrived: "0 waiting" and
     // "nothing known" look identical otherwise, and mean opposite things.
@@ -646,11 +669,13 @@ static void update_sessions_screen(const UsageData* d) {
             lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
         }
         lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
         return;
     }
     lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
 
+    lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text_fmt(sess_count_lbl[0], "%d", d->sessions_waiting);
     lv_label_set_text_fmt(sess_count_lbl[1], "%d", d->sessions_working);
     lv_label_set_text_fmt(sess_count_lbl[2], "%d", d->sessions_parked);
@@ -664,11 +689,23 @@ static void update_sessions_screen(const UsageData* d) {
         }
     }
 
+    int zeilen = d->sessions_name_count;
     if (d->sessions_hidden > 0) {
         lv_label_set_text_fmt(sess_more_lbl, "+%d more", d->sessions_hidden);
+        lv_obj_set_pos(sess_more_lbl, 0, sess_first_row_y + zeilen * sess_row_h);
         lv_obj_clear_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
+        zeilen++;
     } else {
         lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // The card shrinks to what it holds. A panel sized for six names with two
+    // in it reads as something failed to load.
+    if (zeilen == 0) {
+        lv_obj_add_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_set_height(sess_list_panel,
+                          sess_first_row_y + zeilen * sess_row_h + L.panel_pad_y);
     }
 }
 
