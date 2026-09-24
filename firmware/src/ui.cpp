@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "splash.h"
 #include "brightness.h"
+#include "battery_runtime.h"
 #include <lvgl.h>
 #include <time.h>
 #include "logo.h"
@@ -276,6 +277,7 @@ static lv_obj_t* battery_body;
 static lv_obj_t* battery_fill;
 static lv_obj_t* battery_nub;
 static lv_obj_t* battery_lbl;
+static lv_obj_t* battery_sub_lbl;   // charge symbol while charging, else time left
 static lv_obj_t* logo_img;
 
 // ---- Live-data freshness → which usage sub-view to show ----
@@ -474,6 +476,17 @@ static void battery_create(lv_obj_t* parent) {
     lv_obj_set_style_text_color(battery_lbl, L.batt_inside ? THEME_TEXT : THEME_DIM, 0);
     lv_label_set_text(battery_lbl, "");
     if (L.batt_inside) lv_obj_center(battery_lbl);
+
+    // One line under the battery: the charge symbol while on the cable, an
+    // estimated time left otherwise. Empty while neither applies — see
+    // battery_runtime.h on why an unknown estimate stays blank.
+    battery_sub_lbl = lv_label_create(parent);
+    lv_obj_set_style_text_font(battery_sub_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(battery_sub_lbl, THEME_DIM, 0);
+    lv_obj_set_style_text_align(battery_sub_lbl, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_width(battery_sub_lbl, total_w);
+    lv_obj_set_pos(battery_sub_lbl, body_x, L.batt_y + L.batt_h + 3);
+    lv_label_set_text(battery_sub_lbl, "");
 }
 
 
@@ -1008,7 +1021,7 @@ static void apply_battery_visibility(void) {
     if (!battery_body) return;
     // On the splash the whole indicator gets out of the way of the artwork.
     const bool hide = (current_screen == SCREEN_SPLASH);
-    lv_obj_t* teile[] = { battery_body, battery_nub, battery_lbl };
+    lv_obj_t* teile[] = { battery_body, battery_nub, battery_lbl, battery_sub_lbl };
     for (lv_obj_t* teil : teile) {
         if (!teil) continue;
         if (hide) lv_obj_add_flag(teil, LV_OBJ_FLAG_HIDDEN);
@@ -1104,6 +1117,21 @@ void ui_update_battery(int percent, bool charging) {
     if (charging)                 farbe = THEME_GREEN;
     else if (pct <= BATT_LOW_PCT) farbe = THEME_RED;
     lv_obj_set_style_bg_color(battery_fill, farbe, 0);
+
+    battery_runtime_sample(percent, charging, lv_tick_get());
+    if (battery_sub_lbl) {
+        const int rest = battery_runtime_minutes();
+        if (charging) {
+            lv_label_set_text(battery_sub_lbl, LV_SYMBOL_CHARGE " Charging");
+        } else if (rest >= 0) {
+            // Rounded to the coarseness the estimate deserves: a drain slope
+            // from a whole-percent reading cannot justify single minutes.
+            if (rest >= 60) lv_label_set_text_fmt(battery_sub_lbl, "~%dh %02dm", rest / 60, rest % 60);
+            else            lv_label_set_text_fmt(battery_sub_lbl, "~%dm", rest);
+        } else {
+            lv_label_set_text(battery_sub_lbl, "");
+        }
+    }
 
     if (battery_lbl) {
         if (percent < 0) {
