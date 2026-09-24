@@ -117,12 +117,12 @@ static void compute_layout(const BoardCaps& c) {
     // Deliberately larger than the 48 px icon it replaced: at arm's length on
     // a desk the number has to be readable at a glance, and the header has the
     // room. Only one weight of Styrene ships, so "heavier" means a larger size.
-    L.batt_w = 68;
-    L.batt_h = 36;
+    L.batt_w = 58;
+    L.batt_h = 30;
     L.batt_nub_w = 6;
     L.batt_nub_h = 16;
     L.batt_inside = true;
-    L.batt_font = &font_styrene_20;
+    L.batt_font = &font_styrene_16;
     L.batt_lbl_gap = 6;
     L.pair_y1 = 40;
     L.pair_y2 = 120;
@@ -295,9 +295,10 @@ static lv_obj_t* battery_lbl;
 // als Regular vor (assets/StyreneB-Regular.otf); ein echter Fettschnitt hiesse
 // eine zweite Schriftdatei fuer drei Ziffern. Zwei Versaetze statt einem, weil
 // einer allein gegen die gefuellte Flaeche noch zu duenn wirkte.
-#define BATT_FETT_EBENEN 2
+#define BATT_FETT_EBENEN 3
 static lv_obj_t* battery_lbl_fett[BATT_FETT_EBENEN];
-static const lv_point_t BATT_FETT_VERSATZ[BATT_FETT_EBENEN] = { {1, 0}, {0, 1} };
+static const lv_point_t BATT_FETT_VERSATZ[BATT_FETT_EBENEN] =
+    { {1, 0}, {0, 1}, {1, 1} };
 static lv_obj_t* battery_sub_lbl;   // charge symbol while charging, else time left
 static lv_obj_t* logo_img;
 
@@ -761,8 +762,12 @@ static void update_sessions_screen(const UsageData* d) {
 
     int zeilen = d->sessions_name_count;
     if (d->sessions_hidden > 0) {
+        // Unten in der Karte, nicht direkt unter der letzten Zeile: Die Karte
+        // reicht ohnehin bis zum unteren Rand, und "+N more" ist eine Fussnote
+        // zur ganzen Liste, kein weiterer Eintrag. Timo, 2026-09-25: "das +xx
+        // more soll ganz unten auf dem screen sein".
         lv_label_set_text_fmt(sess_more_lbl, "+%d more", d->sessions_hidden);
-        lv_obj_set_pos(sess_more_lbl, 0, sess_first_row_y + zeilen * sess_row_h);
+        lv_obj_align(sess_more_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
         lv_obj_clear_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
         zeilen++;
     } else {
