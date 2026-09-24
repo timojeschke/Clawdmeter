@@ -35,28 +35,34 @@ static uint8_t accel_to_rotation(float ax, float ay) {
     return 255;      // too close to a diagonal — keep what we have
 }
 
-// The QMI8658's *first* I2C write after boot sporadically fails with
-// ESP_ERR_INVALID_STATE (measured: 4 of 7 boots, and only at brightness step 3
-// — the brightest, highest-current setting). The sensor works fine afterwards,
-// so the only damage is an alarming red line in the boot log that teaches you
-// to ignore the boot log.
+// KNOWN AND HARMLESS: the boot log sometimes carries one red line here —
+//   [E][esp32-hal-i2c-ng.c:275] i2cWrite(): i2c_master_transmit failed:
+//   [259] ESP_ERR_INVALID_STATE
+// always at ~1036 ms, always between "init: imu" and "QMI8658 init OK". The
+// sensor reports OK every time and auto-rotation works. Investigated over 11
+// boots on hardware in 2026-09; do not restart the chase without new evidence.
 //
-// What is established: the failing write sits inside SensorQMI8658::begin(),
-// which still returns true, so retrying begin() would never trigger. What is
-// not established: why. ESP_ERR_INVALID_STATE is not a documented return of
-// i2c_master_transmit, and the IDF driver ships pre-compiled here, so the
-// cause was not readable from source.
+// Established:
+//   - The failing write sits INSIDE SensorQMI8658::begin(), which still
+//     returns true. A retry around begin() can therefore never fire — that is
+//     the obvious fix, and it is a dead end.
+//   - Not the second Wire.begin() the sensor library issues (SensorCommon.tpp
+//     line 83): ESP32 TwoWire::begin() returns early on i2cIsInit() and tears
+//     nothing down.
+//   - Not brightness/current draw. That theory fit 3 of 3 failing boots at the
+//     brightest step and was then falsified by a failure at step 1.
+//   - Not readable from source: ESP_ERR_INVALID_STATE is not a documented
+//     return of i2c_master_transmit, and the IDF driver ships pre-compiled.
 //
-// This warm-up is therefore a *hypothesis under test*, not a diagnosis: if the
-// brightness correlation means a current-draw glitch on the shared rail, the
-// fault is probabilistic per transaction, and spending the first transaction
-// on a throwaway probe absorbs it. A zero-length transfer takes the HAL's
-// probe path, which logs at verbose level — so a failure here stays silent by
-// design, where a failed register write shouts.
-//
-// If the error survives this, the next step is NOT a third variation. It is to
-// accept the line as an Espressif HAL artefact and say so in the docs.
+// The warm-up below and the settle delay in main.cpp are kept on weak but
+// real evidence: 3 of 3 boots failed without them, 2 of 7 with them. Small
+// numbers, gathered across firmware revisions — enough to keep two cheap
+// lines, not enough to call it a fix. Neither is load-bearing; the driver
+// works without them.
 static void warm_up_i2c(void) {
+    // Spend the first transaction on a throwaway probe. A zero-length
+    // transfer takes the HAL's probe path, which logs at verbose level, so
+    // if the flakiness lands here it stays silent instead of shouting.
     for (int versuch = 0; versuch < 3; ++versuch) {
         Wire.beginTransmission(QMI8658_L_SLAVE_ADDRESS);
         if (Wire.endTransmission() == 0) return;
