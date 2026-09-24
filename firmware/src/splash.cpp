@@ -837,6 +837,10 @@ void splash_next(void) {
     Serial.printf("splash: -> %s\n", a->name);
 }
 
+// Usage-rate group the running animation was chosen for. -1 = nothing picked
+// yet, so the first show always picks.
+static int picked_group = -1;
+
 void splash_pick_for_current_rate(void) {
     if (SPLASH_ANIM_COUNT == 0) return;
     int g = usage_rate_group();
@@ -848,6 +852,7 @@ void splash_pick_for_current_rate(void) {
     int8_t idx = group_lists[g][slot];
     if (idx < 0) return;
 
+    picked_group = g;
     cur_anim = (uint16_t)idx;
     cur_frame = 0;
     frame_started_ms = millis();
@@ -859,8 +864,21 @@ void splash_pick_for_current_rate(void) {
 
 bool splash_is_active(void) { return active; }
 
+void splash_force_repaint(void) {
+#if SPLASH_DIRECT_DRAW
+    force_full = true;
+#endif
+}
+
 void splash_show(void) {
-    splash_pick_for_current_rate();   // select animation; direct path defers the draw
+    // Only pick a new animation when there is none yet or the usage-rate group
+    // actually changed. Picking on every show was fine while the splash was the
+    // boot screen and only toggled by a tap; with the page carousel it is shown
+    // several times a minute, and each show started a *different* animation from
+    // frame 0 — mid-stride, which reads as the picture glitching.
+    if (picked_group != usage_rate_group()) {
+        splash_pick_for_current_rate();   // direct path defers the draw
+    }
     if (splash_container) lv_obj_clear_flag(splash_container, LV_OBJ_FLAG_HIDDEN);
     active = true;
 #if SPLASH_DIRECT_DRAW

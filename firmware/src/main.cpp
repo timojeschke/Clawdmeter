@@ -385,6 +385,19 @@ void loop() {
     // is detected by the next tick after wake and ramped in then.
     if (!idle_is_asleep()) display_hal_tick();
 
+    // A rotation blanks and re-ramps the panel. On boards where the splash
+    // paints straight to the display, that wipes the picture and the
+    // incremental draw never brings it back — it stays half erased. Ask for a
+    // full repaint whenever the orientation actually changed.
+    {
+        static int last_quadrant = -1;
+        const int quadrant = imu_hal_rotation_quadrant();
+        if (quadrant != last_quadrant) {
+            last_quadrant = quadrant;
+            if (splash_is_active()) splash_force_repaint();
+        }
+    }
+
     // ---- Physical buttons ----
     //   PRIMARY   → tap: page back (page forward on one-button boards)
     //               hold: HID Space (Claude Code voice-mode PTT)

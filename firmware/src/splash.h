@@ -41,3 +41,12 @@ void splash_mini_tick(void);
 lv_obj_t* splash_mascot_create(lv_obj_t *parent, int slot_x, int feet_y, int cell);
 void splash_mascot_tick(void);
 void splash_mascot_set_visible(bool v);
+
+// Request a full repaint on the next splash_tick().
+//
+// On PSRAM-less boards the splash paints straight to the panel, past LVGL. Any
+// LVGL redraw — a tap event, a rotation transition — then paints over part of
+// the picture, and the incremental splash draw never restores it: the creature
+// stays half erased. Callers that know something else just painted use this.
+// No-op where the splash goes through an LVGL canvas.
+void splash_force_repaint(void);

@@ -256,7 +256,9 @@ static lv_obj_t* lbl_anim;      // status line: connection state + whimsical idl
 #define BATT_BORDER_W  2
 #define BATT_NUB_GAP   1
 #define BATT_LOW_PCT  10   // below this the fill turns red
-#define BATT_FILL_OPA LV_OPA_50   // dimmed so the number stays readable on top
+// Solid terracotta, the same accent the usage bars use — the header then reads
+// as part of the same design instead of a grey box borrowed from elsewhere.
+#define BATT_FILL_OPA LV_OPA_COVER
 
 static lv_obj_t* battery_body;
 static lv_obj_t* battery_fill;
@@ -429,7 +431,9 @@ static void battery_create(lv_obj_t* parent) {
     lv_obj_set_pos(battery_body, body_x, L.batt_y);
     lv_obj_set_style_radius(battery_body, L.batt_h / 3, 0);
     lv_obj_set_style_border_width(battery_body, BATT_BORDER_W, 0);
-    lv_obj_set_style_border_color(battery_body, THEME_TEXT, 0);
+    // Quiet outline, loud fill: the charge level should carry the colour, not
+    // the housing.
+    lv_obj_set_style_border_color(battery_body, THEME_DIM, 0);
 
     // Width is set per update; height and position are fixed.
     battery_fill = lv_obj_create(battery_body);
@@ -448,7 +452,7 @@ static void battery_create(lv_obj_t* parent) {
                    L.batt_y + (L.batt_h - L.batt_nub_h) / 2);
     lv_obj_set_style_radius(battery_nub, 1, 0);
     lv_obj_set_style_bg_opa(battery_nub, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(battery_nub, THEME_TEXT, 0);
+    lv_obj_set_style_bg_color(battery_nub, THEME_DIM, 0);
 
     // Inside the body on large screens, beside it on small ones where the
     // interior is too short for any legible font. ui_update_battery() places
@@ -972,8 +976,14 @@ static void apply_battery_visibility(void) {
 // page you are looking at.
 static void global_click_cb(lv_event_t* e) {
     (void)e;
-    if (current_screen == SCREEN_SPLASH) splash_next();
-    else                                 brightness_cycle();
+    if (current_screen == SCREEN_SPLASH) {
+        splash_next();
+        // LVGL processes this click event and may repaint the container over
+        // the directly-drawn picture; ask for a full redraw afterwards.
+        splash_force_repaint();
+    } else {
+        brightness_cycle();
+    }
 }
 
 void ui_show_screen(screen_t screen) {
@@ -1039,7 +1049,7 @@ void ui_update_battery(int percent, bool charging) {
     if (pct > 0 && fuellung < 1) fuellung = 1;
     lv_obj_set_width(battery_fill, fuellung);
 
-    lv_color_t farbe = THEME_TEXT;
+    lv_color_t farbe = THEME_ACCENT;
     if (charging)                 farbe = THEME_GREEN;
     else if (pct <= BATT_LOW_PCT) farbe = THEME_RED;
     lv_obj_set_style_bg_color(battery_fill, farbe, 0);
