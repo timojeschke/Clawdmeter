@@ -128,10 +128,13 @@ def test_kurze_liste_kommt_vollstaendig_durch():
     assert "sx" not in r
 
 
-def test_lange_namen_werden_gekuerzt():
+def test_lange_namen_werden_an_der_wortgrenze_gekuerzt():
+    # Frueher wurde hart nach MAX_NAME_CHARS geschnitten. Das ergab Bruchstuecke
+    # wie "Stoetefalke - Webse"; die Wortgrenze liefert den Teil, der die
+    # Session tatsaechlich identifiziert.
     lang = "Stoetefalke - Webseite Personal Training"
     r = merge_into_payload(BASIS, _stand([lang]))
-    assert r["sn"] == [lang[:MAX_NAME_CHARS]]
+    assert r["sn"] == ["Stoetefalke"]
 
 
 def test_viele_sessions_sprengen_die_grenze_nicht():
@@ -289,3 +292,21 @@ def test_nutzlast_ohne_sessions_wird_nicht_zweimal_versucht():
     erfolg = asyncio.run(_session(client).write_payload({"s": 37}))
     assert erfolg is False
     assert len(client.schreibvorgaenge) == 1
+
+
+# --- Namenskuerzung ---------------------------------------------------------
+
+@pytest.mark.parametrize("roh, erwartet", [
+    ("Stötefalke - Webseite Personal Training", "Stötefalke"),
+    ("AckerMind - Social Media",                "AckerMind"),
+    ("TJCreate - CRM",                          "TJCreate - CRM"),   # passt
+    ("Heimatschutzverein - Webseite",           "Heimatschutzverein"),
+    ("Donaudampfschifffahrtsgesellschaft",      "Donaudampfschifffa"),  # keine Grenze
+])
+def test_lange_namen_brechen_an_der_wortgrenze(roh, erwartet):
+    # Ein harter Schnitt liefert Bruchstuecke wie "Stötefalke - Webse", die auf
+    # einem Blick-Display wie ein Tippfehler wirken.
+    from daemon.sessions_source import _kuerzen, MAX_NAME_CHARS
+    ergebnis = _kuerzen(roh)
+    assert ergebnis == erwartet
+    assert len(ergebnis) <= MAX_NAME_CHARS

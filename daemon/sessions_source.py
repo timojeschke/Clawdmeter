@@ -120,8 +120,26 @@ def _waiting_names(daten: dict) -> list[str]:
         if isinstance(s, dict) and s.get("zustand") == "wartet":
             name = str(s.get("name", "")).strip()
             if name:
-                namen.append(name[:MAX_NAME_CHARS])
+                namen.append(_kuerzen(name))
     return namen
+
+
+def _kuerzen(name: str) -> str:
+    """Shorten to MAX_NAME_CHARS, preferring a word boundary.
+
+    A hard slice produces "Stötefalke - Webse" — a fragment that reads like a
+    typo on a screen you glance at. Cutting back to the last separator gives
+    "Stötefalke" instead, which is what identifies the session anyway. Only
+    worth it when the boundary is not so early that the name loses its meaning,
+    hence the half-length floor; otherwise the hard slice stands.
+    """
+    if len(name) <= MAX_NAME_CHARS:
+        return name
+    gekuerzt = name[:MAX_NAME_CHARS]
+    grenze = max(gekuerzt.rfind(" "), gekuerzt.rfind("-"))
+    if grenze >= MAX_NAME_CHARS // 2:
+        return gekuerzt[:grenze].rstrip(" -")
+    return gekuerzt.rstrip()
 
 
 def _serialised_size(payload: dict) -> int:

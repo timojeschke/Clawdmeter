@@ -757,7 +757,8 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
     # polling Anthropic every 10 s to fix that would be wasteful and rude. So
     # the session fields get their own, faster beat on the last usage payload.
     last_sessions_push = 0.0
-    letzte_nutzlast = None
+    letzte_nutzlast = None      # Nutzungszahlen ohne Sessionfelder
+    zuletzt_gesendet = None     # was wirklich zuletzt ueber Funk ging
     used_successfully = False
     consecutive_failures = 0  # D-03: zombie-link break counter
     try:
@@ -790,6 +791,7 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         letzte_nutzlast = dict(payload)
                         payload = await add_session_fields(payload)
                         if await session.write_payload(payload):
+                            zuletzt_gesendet = dict(payload)
                             last_poll = time.time()
                             last_sessions_push = last_poll
                             used_successfully = True
@@ -833,10 +835,13 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
             if (letzte_nutzlast is not None
                     and time.time() - last_sessions_push >= SESSIONS_PUSH_INTERVAL):
                 aktualisiert = await add_session_fields(dict(letzte_nutzlast))
-                # Only worth a BLE write if the sessions source actually answered;
-                # otherwise this would re-send identical bytes every 10 s.
-                if aktualisiert != letzte_nutzlast:
+                # Compare against what was last actually SENT, not against the
+                # usage-only payload: the latter never carries session fields,
+                # so the two always differed and the beat wrote every 10 s
+                # even when nothing had changed (field observation 2026-09-25).
+                if aktualisiert != zuletzt_gesendet:
                     if await session.write_payload(aktualisiert):
+                        zuletzt_gesendet = dict(aktualisiert)
                         last_sessions_push = time.time()
                         consecutive_failures = 0
                     else:
