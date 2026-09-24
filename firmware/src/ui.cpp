@@ -215,6 +215,13 @@ static void compute_layout(const BoardCaps& c) {
 
 // ---- Usage screen widgets (single non-splash view) ----
 static lv_obj_t* usage_container;
+
+// ---- Sessions screen ----
+static lv_obj_t* sessions_container;
+static lv_obj_t* sess_count_lbl[3];     // waiting / working / parked
+static lv_obj_t* sess_name_lbl[SESSIONS_MAX_NAMES];
+static lv_obj_t* sess_more_lbl;         // "+N more" when the list was trimmed
+static lv_obj_t* sess_hint_lbl;         // shown when no session data has arrived
 static lv_obj_t* lbl_title;
 // Clock fed by the daemon: base epoch (local wall-clock seconds) + the lv_tick at
 // which it landed, so the title ticks forward locally between 60s payloads.
@@ -537,6 +544,130 @@ static void build_idle_group(lv_obj_t* parent) {
     lv_obj_add_flag(idle_group, LV_OBJ_FLAG_HIDDEN);  // update_view_state decides
 }
 
+// One column of the counts panel: a big number over a quiet caption.
+static lv_obj_t* make_session_count(lv_obj_t* parent, int16_t x, int16_t w,
+                                    const char* caption, lv_color_t colour) {
+    lv_obj_t* zahl = lv_label_create(parent);
+    lv_obj_set_style_text_font(zahl, L.pct_font, 0);
+    lv_obj_set_style_text_color(zahl, colour, 0);
+    lv_obj_set_style_text_align(zahl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(zahl, w);
+    lv_obj_set_pos(zahl, x, 0);
+    lv_label_set_text(zahl, "-");
+
+    lv_obj_t* text = lv_label_create(parent);
+    lv_obj_set_style_text_font(text, L.pace_font, 0);
+    lv_obj_set_style_text_color(text, COL_DIM, 0);
+    lv_obj_set_style_text_align(text, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(text, w);
+    lv_label_set_text(text, caption);
+    lv_obj_align_to(text, zahl, LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
+
+    return zahl;
+}
+
+static void init_sessions_screen(lv_obj_t* scr) {
+    sessions_container = lv_obj_create(scr);
+    lv_obj_set_size(sessions_container, L.scr_w, L.scr_h);
+    lv_obj_set_pos(sessions_container, 0, 0);
+    lv_obj_set_style_bg_opa(sessions_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(sessions_container, 0, 0);
+    lv_obj_set_style_pad_all(sessions_container, 0, 0);
+    lv_obj_clear_flag(sessions_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(sessions_container, global_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* titel = lv_label_create(sessions_container);
+    lv_label_set_text(titel, "Sessions");
+    lv_obj_set_style_text_font(titel, L.title_font, 0);
+    lv_obj_set_style_text_color(titel, COL_TEXT, 0);
+    lv_obj_align(titel, LV_ALIGN_TOP_MID, L.title_nudge, L.title_y);
+
+    // Counts panel. Waiting carries the accent because it is the only one that
+    // asks something of the user; parked is dimmed because it asks nothing.
+    // Height from the content, not from the usage screen's panel height —
+    // the number plus its caption is barely half of that, and the leftover
+    // read as a broken panel.
+    const int16_t zahlen_h = L.pct_font->line_height + 2
+                           + L.pace_font->line_height + 2 * L.panel_pad_y;
+    lv_obj_t* zahlen = make_panel(sessions_container, L.margin, L.content_y,
+                                  L.content_w, zahlen_h);
+    const int16_t spalte = (L.content_w - 2 * L.panel_pad_x) / 3;
+    const char* beschriftung[3] = { "Waiting", "Running", "Parked" };
+    const lv_color_t farbe[3]   = { COL_ACCENT, COL_TEXT, COL_DIM };
+    for (int i = 0; i < 3; i++) {
+        sess_count_lbl[i] = make_session_count(zahlen, spalte * i, spalte,
+                                               beschriftung[i], farbe[i]);
+    }
+
+    // Names of the waiting sessions, one per line below the counts.
+    const int16_t liste_y = L.content_y + zahlen_h + L.usage_panel_gap;
+    const int16_t zeile_h = L.reset_font->line_height + 2;
+    for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
+        sess_name_lbl[i] = lv_label_create(sessions_container);
+        lv_obj_set_style_text_font(sess_name_lbl[i], L.reset_font, 0);
+        lv_obj_set_style_text_color(sess_name_lbl[i], COL_TEXT, 0);
+        lv_label_set_long_mode(sess_name_lbl[i], LV_LABEL_LONG_DOT);
+        lv_obj_set_width(sess_name_lbl[i], L.content_w);
+        lv_obj_set_pos(sess_name_lbl[i], L.margin, liste_y + i * zeile_h);
+        lv_label_set_text(sess_name_lbl[i], "");
+        lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    sess_more_lbl = lv_label_create(sessions_container);
+    lv_obj_set_style_text_font(sess_more_lbl, L.reset_font, 0);
+    lv_obj_set_style_text_color(sess_more_lbl, COL_DIM, 0);
+    lv_obj_set_pos(sess_more_lbl, L.margin, liste_y + SESSIONS_MAX_NAMES * zeile_h);
+    lv_label_set_text(sess_more_lbl, "");
+    lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    // Shown instead of three zeros when nothing has arrived: "0 waiting" and
+    // "nothing known" look identical otherwise, and mean opposite things.
+    sess_hint_lbl = lv_label_create(sessions_container);
+    lv_obj_set_style_text_font(sess_hint_lbl, L.reset_font, 0);
+    lv_obj_set_style_text_color(sess_hint_lbl, COL_DIM, 0);
+    lv_obj_set_style_text_align(sess_hint_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(sess_hint_lbl, L.content_w);
+    lv_obj_set_pos(sess_hint_lbl, L.margin, liste_y);
+    lv_label_set_text(sess_hint_lbl, "No session data");
+
+    lv_obj_add_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void update_sessions_screen(const UsageData* d) {
+    if (!sessions_container) return;
+
+    if (!d->sessions_valid) {
+        for (int i = 0; i < 3; i++) lv_label_set_text(sess_count_lbl[i], "-");
+        for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
+            lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    lv_label_set_text_fmt(sess_count_lbl[0], "%d", d->sessions_waiting);
+    lv_label_set_text_fmt(sess_count_lbl[1], "%d", d->sessions_working);
+    lv_label_set_text_fmt(sess_count_lbl[2], "%d", d->sessions_parked);
+
+    for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
+        if (i < d->sessions_name_count) {
+            lv_label_set_text(sess_name_lbl[i], d->sessions_names[i]);
+            lv_obj_clear_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (d->sessions_hidden > 0) {
+        lv_label_set_text_fmt(sess_more_lbl, "+%d more", d->sessions_hidden);
+        lv_obj_clear_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void init_usage_screen(lv_obj_t* scr) {
     usage_container = lv_obj_create(scr);
     lv_obj_set_size(usage_container, L.scr_w, L.scr_h);
@@ -624,6 +755,7 @@ void ui_init(void) {
 #endif
 
     init_usage_screen(scr);
+    init_sessions_screen(scr);
     splash_init(scr);
 
     if (splash_get_root()) {
@@ -651,6 +783,7 @@ void ui_init(void) {
 
 void ui_update(const UsageData* data) {
     if (!data->valid) return;
+    update_sessions_screen(data);
     data_ok = data->ok;
     if (!data->ok) return;          // a {"ok":false} "no data" beat → fall through to idle, keep last numbers
     last_data_ms = lv_tick_get();   // a real usage update just landed
@@ -845,11 +978,15 @@ static void global_click_cb(lv_event_t* e) {
 
 void ui_show_screen(screen_t screen) {
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+    if (sessions_container) lv_obj_add_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
 
     switch (screen) {
     case SCREEN_SPLASH:  splash_show(); break;
     case SCREEN_USAGE:   lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_SESSIONS:
+        if (sessions_container) lv_obj_clear_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
+        break;
     default: break;
     }
 

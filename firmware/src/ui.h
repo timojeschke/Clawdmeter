@@ -2,9 +2,13 @@
 #include "data.h"
 #include "ble.h"
 
+// Carousel order — the side buttons step through this list and wrap.
+// Sessions sits first because it is the screen that asks something of the
+// user; the splash sits last so a page turn never lands on it by accident.
 enum screen_t {
-    SCREEN_SPLASH,
+    SCREEN_SESSIONS,
     SCREEN_USAGE,
+    SCREEN_SPLASH,
     SCREEN_COUNT,
 };
 

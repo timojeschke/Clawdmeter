@@ -1,6 +1,12 @@
 #pragma once
 #include <Arduino.h>
 
+// Six names of 24 bytes is what the daemon's 480-byte budget realistically
+// delivers alongside the usage numbers; it also fills the screen without
+// scrolling. The daemon trims to fit — these are the ceiling, not a promise.
+#define SESSIONS_MAX_NAMES 6
+#define SESSIONS_NAME_LEN  24
+
 struct UsageData {
     float session_pct;       // utilization 0-100 (5h window Pro/Max; spending % Enterprise)
     int session_reset_mins;  // minutes until reset
@@ -16,4 +22,19 @@ struct UsageData {
     int  clock_fmt;          // 12 or 24 (hour format from daemon); defaults to 24
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
+
+    // ---- Claude Code sessions on a remote machine (optional second source) ----
+    // Absent unless the daemon is configured for it; sessions_valid stays false
+    // then and the sessions screen says so instead of showing three zeros,
+    // which would read as "nothing is waiting" rather than "nothing is known".
+    bool sessions_valid;
+    int  sessions_waiting;   // finished a turn, waiting for input
+    int  sessions_working;   // busy right now
+    int  sessions_parked;    // idle for a long while
+    // Names of waiting sessions, as many as fit the 512-byte BLE payload.
+    // sessions_hidden counts those left out — the screen shows "+N more"
+    // rather than silently presenting a partial list as complete.
+    char sessions_names[SESSIONS_MAX_NAMES][SESSIONS_NAME_LEN];
+    int  sessions_name_count;
+    int  sessions_hidden;
 };

@@ -47,6 +47,9 @@ RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
 REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
 
 POLL_INTERVAL = 60
+# Session fields refresh on their own, faster cadence — see the comment at
+# last_sessions_push. Must be a multiple of TICK to actually fire on time.
+SESSIONS_PUSH_INTERVAL = 10
 TICK = 5
 CONNECT_RETRIES = 3        # D-01: attempts before giving up on a device
 CONNECT_RETRY_DELAY = 2.0  # D-01: seconds between failed connect attempts
@@ -663,6 +666,12 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
     await session.setup_refresh_subscription()
 
     last_poll = 0.0  # D-03: poll immediately on first connect
+    # Session states change on a scale of seconds; the usage numbers move over
+    # hours. Tying both to POLL_INTERVAL would mean a stale session screen, and
+    # polling Anthropic every 10 s to fix that would be wasteful and rude. So
+    # the session fields get their own, faster beat on the last usage payload.
+    last_sessions_push = 0.0
+    letzte_nutzlast = None
     used_successfully = False
     consecutive_failures = 0  # D-03: zombie-link break counter
 
@@ -719,9 +728,11 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         if tray_state:
                             tray_state.set_error("token expired — run claude login")
                     if payload is not None:
+                        letzte_nutzlast = dict(payload)
                         payload = await add_session_fields(payload)
                         if await session.write_payload(payload):
                             last_poll = time.time()
+                            last_sessions_push = last_poll
                             used_successfully = True
                             consecutive_failures = 0  # D-03: reset on success
                             if tray_state:
@@ -742,6 +753,23 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                     # toast "token expired" — that mislabeled a boot-time DNS blip
                     # as an auth problem (SC#5). Leave tray state unchanged; the next
                     # tick retries and set_connected() recovers it.
+
+            # Faster beat for the session fields only. Re-sends the cached usage
+            # numbers unchanged — the device overwrites its whole state from each
+            # payload, so leaving them out would blank the usage screen.
+            if (letzte_nutzlast is not None
+                    and time.time() - last_sessions_push >= SESSIONS_PUSH_INTERVAL):
+                aktualisiert = await add_session_fields(dict(letzte_nutzlast))
+                # Only worth a BLE write if the sessions source actually answered;
+                # otherwise this would re-send identical bytes every 10 s.
+                if aktualisiert != letzte_nutzlast:
+                    if await session.write_payload(aktualisiert):
+                        last_sessions_push = time.time()
+                        consecutive_failures = 0
+                    elif note_write_failure():
+                        break
+                else:
+                    last_sessions_push = time.time()
 
             # Wake on a refresh request OR a stop, whichever comes first. Waking
             # promptly on stop_event is what lets the finally below run

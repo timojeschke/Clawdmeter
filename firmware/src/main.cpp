@@ -120,6 +120,31 @@ static bool parse_json(const char* json, UsageData* out) {
     out->clock_epoch = doc["t"] | 0L;
     out->clock_fmt = doc["tf"] | 24;
     out->ok = doc["ok"] | false;
+
+    // Session fields are optional — the daemon only sends them when it has been
+    // pointed at a sessions server. "sw" absent means unknown, which the UI
+    // must not render as three zeros.
+    out->sessions_valid = doc["sw"].is<int>();
+    if (out->sessions_valid) {
+        out->sessions_waiting = doc["sw"] | 0;
+        out->sessions_working = doc["sa"] | 0;
+        out->sessions_parked  = doc["sg"] | 0;
+        out->sessions_hidden  = doc["sx"] | 0;
+        out->sessions_name_count = 0;
+        for (JsonVariant name : doc["sn"].as<JsonArray>()) {
+            if (out->sessions_name_count >= SESSIONS_MAX_NAMES) {
+                // More names than the screen holds: count the rest as hidden
+                // so the total still adds up to sessions_waiting.
+                out->sessions_hidden++;
+                continue;
+            }
+            strlcpy(out->sessions_names[out->sessions_name_count],
+                    name.as<const char*>() ? name.as<const char*>() : "",
+                    SESSIONS_NAME_LEN);
+            out->sessions_name_count++;
+        }
+    }
+
     out->valid = true;
     return true;
 }
@@ -291,7 +316,7 @@ void setup() {
     ui_init();
     ui_update_ble_status(ble_get_state(), ble_get_device_name(), ble_get_mac_address());
     ui_update_battery(power_hal_battery_pct(), power_hal_is_charging());
-    ui_show_screen(SCREEN_SPLASH);
+    ui_show_screen(SCREEN_SESSIONS);
 
     Serial.printf("Dashboard ready (%s, %dx%d), waiting for data on BLE...\n",
         board_caps().name, W, H);
