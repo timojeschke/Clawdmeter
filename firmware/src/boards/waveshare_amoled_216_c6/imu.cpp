@@ -35,7 +35,37 @@ static uint8_t accel_to_rotation(float ax, float ay) {
     return 255;      // too close to a diagonal — keep what we have
 }
 
+// The QMI8658's *first* I2C write after boot sporadically fails with
+// ESP_ERR_INVALID_STATE (measured: 4 of 7 boots, and only at brightness step 3
+// — the brightest, highest-current setting). The sensor works fine afterwards,
+// so the only damage is an alarming red line in the boot log that teaches you
+// to ignore the boot log.
+//
+// What is established: the failing write sits inside SensorQMI8658::begin(),
+// which still returns true, so retrying begin() would never trigger. What is
+// not established: why. ESP_ERR_INVALID_STATE is not a documented return of
+// i2c_master_transmit, and the IDF driver ships pre-compiled here, so the
+// cause was not readable from source.
+//
+// This warm-up is therefore a *hypothesis under test*, not a diagnosis: if the
+// brightness correlation means a current-draw glitch on the shared rail, the
+// fault is probabilistic per transaction, and spending the first transaction
+// on a throwaway probe absorbs it. A zero-length transfer takes the HAL's
+// probe path, which logs at verbose level — so a failure here stays silent by
+// design, where a failed register write shouts.
+//
+// If the error survives this, the next step is NOT a third variation. It is to
+// accept the line as an Espressif HAL artefact and say so in the docs.
+static void warm_up_i2c(void) {
+    for (int versuch = 0; versuch < 3; ++versuch) {
+        Wire.beginTransmission(QMI8658_L_SLAVE_ADDRESS);
+        if (Wire.endTransmission() == 0) return;
+        delay(5);
+    }
+}
+
 void imu_hal_init(void) {
+    warm_up_i2c();
     if (!imu.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL)) {
         Serial.println("QMI8658 init failed");
         return;
