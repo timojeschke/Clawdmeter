@@ -287,6 +287,17 @@ void setup() {
     // beide OK — und liess sich aus der Ferne nicht zuordnen. Diese vier Zeilen
     // sagen im Startprotokoll, WELCHER der drei I2C-Teilnehmer sie auslöst.
     // Dürfen wieder raus, sobald das geklärt ist.
+    // Settle before the first PMU write. Measured correlation over ten boots:
+    // the I2C error appeared at brightness step 3 both times it was used, at
+    // step 2 once of two, and at step 1 once of seven. Brightness itself never
+    // touches I2C — it is a QSPI display command — but a brighter AMOLED draws
+    // noticeably more current from the same AXP2101 that sits on the I2C bus,
+    // and the failing write is the first one aimed at it. A brief pause lets
+    // the rail settle before we talk to the chip powering it.
+    //
+    // A hypothesis with evidence behind it, not a proven cause. The init:
+    // markers stay in until several boots at step 3 have come through clean.
+    delay(30);
     Serial.println("init: power");
     power_hal_init();
     Serial.println("init: imu");
