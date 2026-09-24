@@ -11,8 +11,13 @@ static int      minuten    = -1;
 
 // Below this the slope is noise: the AXP reports whole percent, so a single
 // step over a short window would imply wildly different runtimes.
-#define MIN_ABFALL_PCT   3
-#define MIN_FENSTER_MS   (5u * 60u * 1000u)
+//
+// Lowered from 3 %/5 min on 2026-09-25: at those thresholds the line stayed
+// blank through a whole evening of ordinary use, which reads as a broken
+// feature rather than as caution. Two points over three minutes is still two
+// independent readings and still refuses to answer from a single sample.
+#define MIN_ABFALL_PCT   2
+#define MIN_FENSTER_MS   (3u * 60u * 1000u)
 
 // A reading above the anchor means the pack recovered (cable, load dropped,
 // or simply PMU jitter). Re-anchor instead of computing a negative slope.

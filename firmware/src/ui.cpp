@@ -118,7 +118,7 @@ static void compute_layout(const BoardCaps& c) {
     L.batt_nub_w = 6;
     L.batt_nub_h = 16;
     L.batt_inside = true;
-    L.batt_font = &font_styrene_24;
+    L.batt_font = &font_styrene_20;
     L.batt_lbl_gap = 6;
     L.pair_y1 = 40;
     L.pair_y2 = 120;
@@ -274,10 +274,14 @@ static lv_obj_t* lbl_scoped;    // per-model weekly quota, replaces the idle lin
 // as part of the same design instead of a grey box borrowed from elsewhere.
 #define BATT_FILL_OPA LV_OPA_COVER
 
+// Room the line under the battery borrows to its left, so it never wraps.
+#define BATT_SUB_EXTRA_W 70
+
 static lv_obj_t* battery_body;
 static lv_obj_t* battery_fill;
 static lv_obj_t* battery_nub;
 static lv_obj_t* battery_lbl;
+static lv_obj_t* battery_lbl_fett;  // zweite Ebene, 1 px versetzt — siehe Kommentar bei der Erzeugung
 static lv_obj_t* battery_sub_lbl;   // charge symbol while charging, else time left
 static lv_obj_t* logo_img;
 
@@ -472,11 +476,25 @@ static void battery_create(lv_obj_t* parent) {
     // Inside the body on large screens, beside it on small ones where the
     // interior is too short for any legible font. ui_update_battery() places
     // the outside variant, because its width changes with the digit count.
+    // Inside the body the number is set in a faux bold: the same glyphs drawn
+    // twice, one pixel apart. Styrene ships here in a single weight
+    // (assets/StyreneB-Regular.otf), so a real bold cut would mean generating
+    // and embedding a second font for three digits. Doubling thickens the
+    // strokes enough to read against the fill, which is the whole point, and
+    // lets the size come down a step so the number stops crowding the outline.
     battery_lbl = lv_label_create(L.batt_inside ? battery_body : parent);
     lv_obj_set_style_text_font(battery_lbl, L.batt_font, 0);
     lv_obj_set_style_text_color(battery_lbl, L.batt_inside ? THEME_TEXT : THEME_DIM, 0);
     lv_label_set_text(battery_lbl, "");
-    if (L.batt_inside) lv_obj_center(battery_lbl);
+    if (L.batt_inside) {
+        lv_obj_center(battery_lbl);
+        battery_lbl_fett = lv_label_create(battery_body);
+        lv_obj_set_style_text_font(battery_lbl_fett, L.batt_font, 0);
+        lv_obj_set_style_text_color(battery_lbl_fett, THEME_TEXT, 0);
+        lv_label_set_text(battery_lbl_fett, "");
+        lv_obj_align(battery_lbl_fett, LV_ALIGN_CENTER, 1, 0);
+        lv_obj_move_background(battery_lbl_fett);
+    }
 
     // One line under the battery: the charge symbol while on the cable, an
     // estimated time left otherwise. Empty while neither applies — see
@@ -485,8 +503,13 @@ static void battery_create(lv_obj_t* parent) {
     lv_obj_set_style_text_font(battery_sub_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(battery_sub_lbl, THEME_DIM, 0);
     lv_obj_set_style_text_align(battery_sub_lbl, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_width(battery_sub_lbl, total_w);
-    lv_obj_set_pos(battery_sub_lbl, body_x, L.batt_y + L.batt_h + 3);
+    // Wider than the battery and right-aligned: "⚡ Charging" and "~3h 20m"
+    // are both longer than the body, and at body width the symbol wrapped onto
+    // its own line. The extra room grows leftwards, so the right edge stays
+    // flush with the battery outline.
+    lv_obj_set_width(battery_sub_lbl, total_w + BATT_SUB_EXTRA_W);
+    lv_obj_set_pos(battery_sub_lbl, body_x - BATT_SUB_EXTRA_W, L.batt_y + L.batt_h + 3);
+    lv_label_set_long_mode(battery_sub_lbl, LV_LABEL_LONG_CLIP);
     lv_label_set_text(battery_sub_lbl, "");
 }
 
@@ -1044,7 +1067,8 @@ static void apply_battery_visibility(void) {
     if (!battery_body) return;
     // On the splash the whole indicator gets out of the way of the artwork.
     const bool hide = (current_screen == SCREEN_SPLASH);
-    lv_obj_t* teile[] = { battery_body, battery_nub, battery_lbl, battery_sub_lbl };
+    lv_obj_t* teile[] = { battery_body, battery_nub, battery_lbl,
+                          battery_lbl_fett, battery_sub_lbl };
     for (lv_obj_t* teil : teile) {
         if (!teil) continue;
         if (hide) lv_obj_add_flag(teil, LV_OBJ_FLAG_HIDDEN);
@@ -1054,6 +1078,7 @@ static void apply_battery_visibility(void) {
     // shows, so the indicator does not vanish without explanation.
     if (battery_lbl && lv_label_get_text(battery_lbl)[0] == '\0') {
         lv_obj_add_flag(battery_lbl, LV_OBJ_FLAG_HIDDEN);
+        if (battery_lbl_fett) lv_obj_add_flag(battery_lbl_fett, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -1159,10 +1184,15 @@ void ui_update_battery(int percent, bool charging) {
     if (battery_lbl) {
         if (percent < 0) {
             lv_label_set_text(battery_lbl, "");
+            if (battery_lbl_fett) lv_label_set_text(battery_lbl_fett, "");
         } else if (L.batt_inside) {
             // No percent sign inside — the battery outline already says what
             // the number means, and the glyph would cost a third of the room.
             lv_label_set_text_fmt(battery_lbl, "%d", percent);
+            if (battery_lbl_fett) {
+                lv_label_set_text(battery_lbl_fett, lv_label_get_text(battery_lbl));
+                lv_obj_align(battery_lbl_fett, LV_ALIGN_CENTER, 1, 0);
+            }
         } else {
             lv_label_set_text_fmt(battery_lbl, "%d%%", percent);
             // Re-align on every update: the label width changes with the
