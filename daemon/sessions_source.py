@@ -43,6 +43,12 @@ PAYLOAD_LIMIT_BYTES = 230
 # ensure_ascii, so "ö" travels as ö.
 MAX_NAME_CHARS = 18
 
+# Wie viel Anfang stehen bleibt, wenn zwei Namen sonst gleich aussaehen. Acht
+# Zeichen reichen, um "Heimatsc…" von "Stoetefa…" zu unterscheiden, und lassen
+# genug Platz fuer das unterscheidende Ende.
+KOPF_CHARS = 8
+KOPF_MIN_CHARS = 5
+
 # Shortest prefix still worth keeping when a word boundary decides the cut.
 # Below this the boundary says less than the letters it would drop.
 MIN_NAME_REST_CHARS = 5
@@ -123,13 +129,13 @@ def _waiting_names(daten: dict) -> list[str]:
     sessions = daten.get("sessions")
     if not isinstance(sessions, list):
         return []
-    namen = []
+    roh = []
     for s in sessions:
         if isinstance(s, dict) and s.get("zustand") == "wartet":
             name = str(s.get("name", "")).strip()
             if name:
-                namen.append(_kuerzen(name))
-    return namen
+                roh.append(name)
+    return _entwirre([_kuerzen(n) for n in roh], roh)
 
 
 def _kuerzen(name: str) -> str:
@@ -153,6 +159,65 @@ def _kuerzen(name: str) -> str:
     if grenze >= MIN_NAME_REST_CHARS:
         rumpf = rumpf[:grenze]
     return rumpf.rstrip(" -") + ELLIPSE
+
+
+def _entwirre(gekuerzt: list[str], roh: list[str]) -> list[str]:
+    """Re-shorten names that collided, so no two lines read alike.
+
+    Field case 2026-09-25: "Heimatschutzverein - Dokumente" and
+    "Heimatschutzverein - Webseite" both became "Heimatschutzverei…". Two
+    identical lines are worse than a truncated one — the list stops telling
+    you which session to open, which is its only job.
+
+    Colliding names are rebuilt as head + ellipsis + the distinguishing tail
+    ("Heimatsc…Dokumente"). Names that do not collide keep their normal,
+    more readable shortening.
+    """
+    zaehler: dict[str, int] = {}
+    for g in gekuerzt:
+        zaehler[g] = zaehler.get(g, 0) + 1
+
+    ergebnis = []
+    for kurz, voll in zip(gekuerzt, roh):
+        if zaehler[kurz] < 2:
+            ergebnis.append(kurz)
+            continue
+        ergebnis.append(_mit_unterscheidendem_ende(voll))
+    return ergebnis
+
+
+def _mit_unterscheidendem_ende(name: str) -> str:
+    """"Heimatschutzverein - Dokumente" -> "Heimatsc…Dokumente".
+
+    Der Unterschied zwischen zwei aehnlichen Sessionnamen steht fast immer
+    hinten ("… - Dokumente" gegen "… - Webseite", "… Fachbuecher" gegen
+    "… Personal Training"). Deshalb bekommt das Ende den Vorrang, und zwar in
+    ganzen Woertern: ein mitten im Wort abgeschnittenes Ende ("…achbuecher")
+    liest sich schlechter als ein kuerzerer Anfang.
+    """
+    woerter = name[KOPF_CHARS:].replace(" - ", " ").replace(" — ", " ").split()
+
+    # Der Kopf darf schrumpfen, damit das letzte Wort ganz bleibt: ein
+    # vollstaendiges "Fachbuecher" sagt mehr als ein achtes Zeichen am Anfang.
+    # Unter KOPF_MIN_CHARS nicht, sonst faengt jede Zeile gleich an.
+    letztes = len(woerter[-1]) if woerter else 0
+    kopf_laenge = max(KOPF_MIN_CHARS,
+                      min(KOPF_CHARS, MAX_NAME_CHARS - 1 - letztes))
+    kopf = name[:kopf_laenge]
+    rest_budget = MAX_NAME_CHARS - len(kopf) - 1      # 1 fuer das Auslassungszeichen
+    ende = ""
+    for wort in reversed(woerter):
+        kandidat = wort if not ende else f"{wort} {ende}"
+        if len(kandidat) > rest_budget:
+            break
+        ende = kandidat
+
+    # Kein einziges Wort passt: Dann doch schneiden, aber vom Wortanfang her,
+    # damit wenigstens der Wortbeginn stimmt.
+    if not ende:
+        ende = (woerter[-1] if woerter else name)[:rest_budget]
+
+    return kopf + ELLIPSE + ende
 
 
 def _serialised_size(payload: dict) -> int:

@@ -323,3 +323,49 @@ def test_zu_lange_namen_enden_mit_auslassungszeichen(roh, erwartet):
     ergebnis = _kuerzen(roh)
     assert ergebnis == erwartet
     assert len(ergebnis) <= MAX_NAME_CHARS
+
+
+# --- Zwei Namen duerfen nie gleich aussehen --------------------------------
+
+def _namen(*roh):
+    from daemon.sessions_source import _waiting_names
+    return _waiting_names({"sessions": [{"zustand": "wartet", "name": n}
+                                        for n in roh]})
+
+
+def test_gleich_gekuerzte_namen_werden_unterscheidbar():
+    # Feldfall 2026-09-25 (PC-Session): Beide Sessions wurden zu
+    # "Heimatschutzverei…" und waren auf dem Display nicht mehr auseinander-
+    # zuhalten. Zwei identische Zeilen sind schlimmer als eine gekuerzte — die
+    # Liste soll ja gerade sagen, welche Session man oeffnen muss.
+    ergebnis = _namen("Heimatschutzverein - Dokumente",
+                      "Heimatschutzverein - Webseite")
+    assert len(set(ergebnis)) == 2
+    assert all("Dokumente" in e or "Webseite" in e for e in ergebnis)
+
+
+def test_unterscheidendes_ende_bleibt_ein_ganzes_wort():
+    # Der Kopf darf schrumpfen, damit das Ende nicht mitten im Wort abbricht:
+    # "Fachbücher" sagt mehr als ein weiteres Zeichen am Anfang.
+    ergebnis = _namen("Stötefalke - Webseite Fachbücher",
+                      "Stötefalke - Webseite Personal Training")
+    assert len(set(ergebnis)) == 2
+    assert any(e.endswith("Fachbücher") for e in ergebnis)
+    assert any(e.endswith("Training") for e in ergebnis)
+
+
+def test_ohne_kollision_bleibt_die_lesbare_kuerzung():
+    # Entwirren ist der Ausnahmefall. Ohne Kollision soll die normale, besser
+    # lesbare Form stehen bleiben statt ueberall ein Ende anzukleben.
+    from daemon.sessions_source import MAX_NAME_CHARS
+    ergebnis = _namen("Stötefalke - Webseite Personal Training", "Privat - IPTV")
+    assert ergebnis == ["Stötefalke…", "Privat - IPTV"]
+    assert all(len(e) <= MAX_NAME_CHARS for e in ergebnis)
+
+
+def test_entwirrte_namen_halten_die_laengengrenze():
+    from daemon.sessions_source import MAX_NAME_CHARS
+    ergebnis = _namen("Donaudampfschifffahrtsgesellschaft Abteilung Eins",
+                      "Donaudampfschifffahrtsgesellschaft Abteilung Zwei")
+    assert len(set(ergebnis)) == 2
+    assert all(len(e) <= MAX_NAME_CHARS for e in ergebnis)
