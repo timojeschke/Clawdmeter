@@ -217,3 +217,75 @@ def test_meldung_erfolgt_nur_einmal(capsys, monkeypatch):
     capsys.readouterr()
     d.report_unknown_ratelimit_headers(kopf)
     assert capsys.readouterr().out == ""
+
+
+# --- BLE-Schreibweg: Groesse entscheidet ueber die Schreibart --------------
+#
+# Feldfehler vom 2026-09-25: Eine Nutzlast von 271 Byte mit fuenf
+# Sessionnamen schlug sieben Mal hintereinander fehl ("Falscher Parameter"),
+# und in dieser Zeit kamen auch keine Nutzungsdaten mehr an. Ursache: ein
+# Write ohne Antwort ist auf ATT_MTU-3 begrenzt, nicht auf die 512 Byte des
+# Firmware-Puffers.
+
+class _AttrappeClient:
+    """Steht fuer den BLE-Client — die Systemgrenze, an der gemockt wird."""
+
+    def __init__(self, mtu_size=247, schlaegt_fehl_ab=None):
+        self.mtu_size = mtu_size
+        self.schlaegt_fehl_ab = schlaegt_fehl_ab
+        self.schreibvorgaenge = []          # (nutzdaten, response)
+
+    async def write_gatt_char(self, uuid, data, response):
+        self.schreibvorgaenge.append((data, response))
+        if self.schlaegt_fehl_ab is not None and len(data) >= self.schlaegt_fehl_ab:
+            raise OSError("[WinError -2147024809] Falscher Parameter.")
+
+
+def _session(client):
+    sitzung = windows_daemon.Session.__new__(windows_daemon.Session)
+    sitzung.client = client
+    return sitzung
+
+
+@nur_mit_bleak
+@pytest.mark.parametrize("fuellung, erwartet_response", [
+    ("x" * 10,  False),    # passt bequem in MTU-3 = 244
+    ("x" * 400, True),     # zu gross -> muss den Long Write nehmen
+])
+def test_grosse_nutzlast_erzwingt_write_mit_antwort(fuellung, erwartet_response):
+    import asyncio
+    client = _AttrappeClient()
+    erfolg = asyncio.run(_session(client).write_payload({"s": 1, "f": fuellung}))
+    assert erfolg is True
+    assert len(client.schreibvorgaenge) == 1
+    _, response = client.schreibvorgaenge[0]
+    assert response is erwartet_response
+
+
+@nur_mit_bleak
+def test_fehlgeschlagener_schreibvorgang_liefert_nutzung_ohne_sessions_nach():
+    # Die Nutzungszahlen sind der Zweck des Geraets; die Sessions sind das
+    # Entbehrliche. Eine zu grosse Sessionliste darf die Nutzungsdaten nicht
+    # mitreissen.
+    import asyncio
+    client = _AttrappeClient(schlaegt_fehl_ab=100)
+    nutzlast = {"s": 37, "w": 92, "sw": 5, "sa": 0, "sg": 24,
+                "sn": ["A" * 22] * 5, "sx": 1}
+
+    erfolg = asyncio.run(_session(client).write_payload(nutzlast))
+
+    assert erfolg is True
+    assert len(client.schreibvorgaenge) == 2
+    zweiter = json.loads(client.schreibvorgaenge[1][0])
+    assert zweiter == {"s": 37, "w": 92}
+
+
+@nur_mit_bleak
+def test_nutzlast_ohne_sessions_wird_nicht_zweimal_versucht():
+    # Ohne Sessionfelder gibt es nichts wegzulassen — ein zweiter Versuch
+    # waere nur eine weitere Sekunde Verzoegerung vor dem Reconnect.
+    import asyncio
+    client = _AttrappeClient(schlaegt_fehl_ab=1)
+    erfolg = asyncio.run(_session(client).write_payload({"s": 37}))
+    assert erfolg is False
+    assert len(client.schreibvorgaenge) == 1

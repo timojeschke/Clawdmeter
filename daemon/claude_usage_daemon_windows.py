@@ -527,11 +527,40 @@ class Session:
         except (BleakError, ValueError, OSError) as e:
             log(f"Refresh subscription unavailable: {e}")
 
+    # A write WITHOUT response is capped at ATT_MTU-3 — 244 bytes at the
+    # usual 247-byte MTU. Anything longer is rejected outright by WinRT
+    # ("Falscher Parameter"), it is not truncated. A write WITH response goes
+    # through a queued (long) write and reaches the firmware's 512-byte
+    # buffer; rx_char carries both WRITE and WRITE_NR, so the device accepts
+    # either. Measured 2026-09-25: a 271-byte payload with five session names
+    # failed seven times in a row on the no-response path.
+    def _write_ohne_antwort_moeglich(self, groesse: int) -> bool:
+        mtu = getattr(self.client, "mtu_size", 0) or 0
+        return bool(mtu) and groesse <= mtu - 3
+
     async def write_payload(self, payload: dict) -> bool:
+        if await self._sende(payload):
+            return True
+
+        # The session fields are the only part that can push a payload past
+        # the small-write limit, and they are the expendable part: usage
+        # numbers are what the device is for. Rather than let one oversized
+        # payload trip the zombie-link break — which cost seven cycles of
+        # usage data in the field — drop the sessions and deliver the rest.
+        ohne_sessions = {k: v for k, v in payload.items()
+                         if k not in ("sw", "sa", "sg", "sn", "sx")}
+        if len(ohne_sessions) == len(payload):
+            return False
+        log("Write failed with session data — retrying without it.")
+        return await self._sende(ohne_sessions)
+
+    async def _sende(self, payload: dict) -> bool:
         data = json.dumps(payload, separators=(",", ":")).encode()
         log(f"Sending: {data.decode()}")
         try:
-            await self.client.write_gatt_char(RX_CHAR_UUID, data, response=False)
+            await self.client.write_gatt_char(
+                RX_CHAR_UUID, data,
+                response=not self._write_ohne_antwort_moeglich(len(data)))
             return True
         except (BleakError, OSError) as e:
             # WinRT can raise a raw OSError/WinError (NOT wrapped as BleakError)
