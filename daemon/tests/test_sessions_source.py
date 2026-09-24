@@ -137,9 +137,13 @@ def test_lange_namen_enden_mit_auslassungszeichen():
     # Frueher wurde hart nach MAX_NAME_CHARS geschnitten. Das ergab Bruchstuecke
     # wie "Stoetefalke - Webse"; die Wortgrenze liefert den Teil, der die
     # Session tatsaechlich identifiziert.
+    # Einziger Name: Er bekommt so viel Platz, wie das Budget hergibt, und
+    # wird hinten gekuerzt. Der Anfang bleibt erhalten.
     lang = "Stoetefalke - Webseite Personal Training"
     r = merge_into_payload(BASIS, _stand([lang]))
-    assert r["sn"] == ["Stoetefalke\u2026"]
+    assert len(r["sn"]) == 1
+    assert r["sn"][0].startswith("Stoetefalke - Webseite")
+    assert r["sn"][0].endswith("\u2026")
 
 
 def test_viele_sessions_sprengen_die_grenze_nicht():
@@ -301,28 +305,25 @@ def test_nutzlast_ohne_sessions_wird_nicht_zweimal_versucht():
 
 # --- Namenskuerzung ---------------------------------------------------------
 
-@pytest.mark.parametrize("roh, erwartet", [
-    # Wortgrenze vorhanden und weit genug hinten: dort wird geschnitten.
-    ("Stötefalke - Webseite Personal Training", "Stötefalke…"),
-    ("AckerMind - Social Media",                "AckerMind…"),
-    # Grenzfall aus dem Feld (PC-Session, 2026-09-25): 19 Zeichen, Grenze bei
-    # Index 8. Frueher wurde daraus "Privat - Clawdmete".
-    ("Privat - Clawdmeter",                     "Privat…"),
-    # Passt vollstaendig — kein Auslassungszeichen, sonst behauptet es etwas.
-    ("TJCreate - CRM",                          "TJCreate - CRM"),
-    # Genau auf der Grenze: 18 Zeichen bleiben unangetastet.
-    ("Heimatschutzverein",                      "Heimatschutzverein"),
-    # Keine brauchbare Wortgrenze: harter Schnitt, aber markiert.
-    ("Donaudampfschifffahrtsgesellschaft",      "Donaudampfschifff…"),
+@pytest.mark.parametrize("roh, grenze, erwartet", [
+    # Passt: unveraendert, kein Auslassungszeichen. Eines zu setzen wuerde
+    # behaupten, dass noch etwas fehlt.
+    ("TJCreate - CRM",       18, "TJCreate - CRM"),
+    ("Heimatschutzverein",   18, "Heimatschutzverein"),
+    # Passt nicht: am Ende schneiden, Auslassungszeichen dahinter. Timo,
+    # 2026-09-25: "Privat - clawdme…. als beispiel, das abkuerzen am ende
+    # bitte." Ausdruecklich KEIN Schnitt an der Wortgrenze — der Anfang bleibt
+    # so stehen, wie der Name anfaengt.
+    ("Privat - Clawdmeter",  18, "Privat - Clawdmet\u2026"),
+    ("Stötefalke - Webseite Personal Training", 22, "Stötefalke - Webseite\u2026"),
+    ("Donaudampfschifffahrtsgesellschaft",      18, "Donaudampfschifff\u2026"),
 ])
-def test_zu_lange_namen_enden_mit_auslassungszeichen(roh, erwartet):
-    # Timos Regel: Ein gekuerzter Name muss sagen, dass er gekuerzt ist. Ein
-    # blosser Schnitt liefert "Stötefalke - Webse" — auf einem Blick-Display
-    # liest sich das wie ein Tippfehler, nicht wie eine Abkuerzung.
-    from daemon.sessions_source import _kuerzen, MAX_NAME_CHARS
-    ergebnis = _kuerzen(roh)
+def test_zu_lange_namen_werden_hinten_gekuerzt(roh, grenze, erwartet):
+    from daemon.sessions_source import _kuerzen
+    ergebnis = _kuerzen(roh, grenze)
     assert ergebnis == erwartet
-    assert len(ergebnis) <= MAX_NAME_CHARS
+    assert len(ergebnis) <= grenze
+
 
 
 # --- Zwei Namen duerfen nie gleich aussehen --------------------------------
@@ -333,39 +334,33 @@ def _namen(*roh):
                                         for n in roh]})
 
 
-def test_gleich_gekuerzte_namen_werden_unterscheidbar():
-    # Feldfall 2026-09-25 (PC-Session): Beide Sessions wurden zu
-    # "Heimatschutzverei…" und waren auf dem Display nicht mehr auseinander-
-    # zuhalten. Zwei identische Zeilen sind schlimmer als eine gekuerzte — die
-    # Liste soll ja gerade sagen, welche Session man oeffnen muss.
-    ergebnis = _namen("Heimatschutzverein - Dokumente",
-                      "Heimatschutzverein - Webseite")
-    assert len(set(ergebnis)) == 2
-    assert all("Dokumente" in e or "Webseite" in e for e in ergebnis)
+def test_gleich_aussehende_namen_werden_nicht_gezeigt():
+    """Lieber weniger Zeilen als zwei, die gleich heissen.
+
+    Feldfall 2026-09-25: "Heimatschutzverein - Dokumente" und
+    "… - Webseite" wurden beide zu "Heimatschutzverei…". Zwei identische
+    Zeilen sind schlimmer als eine fehlende — die Liste soll sagen, welche
+    Session man oeffnen muss. Geloest wird das jetzt ueber die Laenge: Es wird
+    die Variante gewaehlt, in der alle gezeigten Namen verschieden sind.
+    """
+    r = merge_into_payload(BASIS, _stand(["Heimatschutzverein - Dokumente",
+                                          "Heimatschutzverein - Webseite"]))
+    assert len(set(r["sn"])) == len(r["sn"])
 
 
-def test_unterscheidendes_ende_bleibt_ein_ganzes_wort():
-    # Der Kopf darf schrumpfen, damit das Ende nicht mitten im Wort abbricht:
-    # "Fachbücher" sagt mehr als ein weiteres Zeichen am Anfang.
-    ergebnis = _namen("Stötefalke - Webseite Fachbücher",
-                      "Stötefalke - Webseite Personal Training")
-    assert len(set(ergebnis)) == 2
-    assert any(e.endswith("Fachbücher") for e in ergebnis)
-    assert any(e.endswith("Training") for e in ergebnis)
+def test_dubletten_werden_auch_bei_vielen_sessions_vermieden():
+    r = merge_into_payload(BASIS, _stand(["Heimatschutzverein - Dokumente",
+                                          "Heimatschutzverein - Webseite",
+                                          "Privat - Clawdmeter",
+                                          "Privat - IPTV"]))
+    assert len(set(r["sn"])) == len(r["sn"])
+    # Was nicht gezeigt wird, wird gezaehlt — die Summe muss stimmen.
+    assert len(r["sn"]) + r.get("sx", 0) == r["sw"]
 
 
-def test_ohne_kollision_bleibt_die_lesbare_kuerzung():
-    # Entwirren ist der Ausnahmefall. Ohne Kollision soll die normale, besser
-    # lesbare Form stehen bleiben statt ueberall ein Ende anzukleben.
-    from daemon.sessions_source import MAX_NAME_CHARS
-    ergebnis = _namen("Stötefalke - Webseite Personal Training", "Privat - IPTV")
-    assert ergebnis == ["Stötefalke…", "Privat - IPTV"]
-    assert all(len(e) <= MAX_NAME_CHARS for e in ergebnis)
-
-
-def test_entwirrte_namen_halten_die_laengengrenze():
-    from daemon.sessions_source import MAX_NAME_CHARS
-    ergebnis = _namen("Donaudampfschifffahrtsgesellschaft Abteilung Eins",
-                      "Donaudampfschifffahrtsgesellschaft Abteilung Zwei")
-    assert len(set(ergebnis)) == 2
-    assert all(len(e) <= MAX_NAME_CHARS for e in ergebnis)
+def test_namen_bekommen_den_platz_der_uebrig_ist():
+    # Ein kurzer Name soll nicht auf 18 Zeichen beschnitten werden, nur weil
+    # das mal die Obergrenze war. Timo: "bis dahin soll der Platz genutzt
+    # werden."
+    r = merge_into_payload(BASIS, _stand(["Stoetefalke - Webseite Fachbuecher"]))
+    assert r["sn"] == ["Stoetefalke - Webseite Fachbuecher"]

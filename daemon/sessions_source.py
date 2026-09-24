@@ -41,17 +41,11 @@ PAYLOAD_LIMIT_BYTES = 230
 # without adding information — the first words identify the session. Every
 # umlaut costs six bytes here, not two: the payload is serialised with
 # ensure_ascii, so "ö" travels as ö.
-MAX_NAME_CHARS = 18
-
-# Wie viel Anfang stehen bleibt, wenn zwei Namen sonst gleich aussaehen. Acht
-# Zeichen reichen, um "Heimatsc…" von "Stoetefa…" zu unterscheiden, und lassen
-# genug Platz fuer das unterscheidende Ende.
-KOPF_CHARS = 8
-KOPF_MIN_CHARS = 5
-
-# Shortest prefix still worth keeping when a word boundary decides the cut.
-# Below this the boundary says less than the letters it would drop.
-MIN_NAME_REST_CHARS = 5
+# Kandidaten fuer die Namenslaenge, von lang nach kurz durchprobiert. Oben
+# beginnt es dort, wo auch lange Projektnamen noch unterscheidbar sind; unten
+# endet es, wo ein Name nichts mehr aussagt.
+NAME_LAENGEN = (34, 30, 26, 22, 18, 14)
+MAX_NAME_CHARS = NAME_LAENGEN[0]
 
 # One character, so the cut costs the name only one letter. Two bytes over the
 # wire now that the payload travels as UTF-8 — as three dots it would be three.
@@ -135,89 +129,19 @@ def _waiting_names(daten: dict) -> list[str]:
             name = str(s.get("name", "")).strip()
             if name:
                 roh.append(name)
-    return _entwirre([_kuerzen(n) for n in roh], roh)
+    return roh
 
 
-def _kuerzen(name: str) -> str:
-    """Shorten to MAX_NAME_CHARS, marking the cut with an ellipsis.
+def _kuerzen(name: str, grenze: int) -> str:
+    """Am Ende abschneiden und das Auslassungszeichen dahinter setzen.
 
-    Timo's rule: a shortened name must say that it is shortened. A bare slice
-    produces "Stötefalke - Webse", which reads as a typo on a screen you only
-    glance at; "Stötefalke…" reads as a name with more behind it.
-
-    A word boundary is preferred over cutting mid-word, but only when it
-    leaves something recognisable — "Privat - Clawdmeter" breaks at index 8
-    and yields "Privat…", which still identifies the session, while a boundary
-    two characters in would not.
+    Timos Regel, 2026-09-25: "Privat - clawdme…. als beispiel, das abkuerzen am
+    ende bitte." Kein Schnitt an der Wortgrenze und kein Auslassungszeichen in
+    der Mitte — der Anfang bleibt so stehen, wie der Name anfaengt.
     """
-    if len(name) <= MAX_NAME_CHARS:
+    if len(name) <= grenze:
         return name
-
-    # One character goes to the ellipsis itself, so the result still fits.
-    rumpf = name[:MAX_NAME_CHARS - 1]
-    grenze = max(rumpf.rfind(" "), rumpf.rfind("-"))
-    if grenze >= MIN_NAME_REST_CHARS:
-        rumpf = rumpf[:grenze]
-    return rumpf.rstrip(" -") + ELLIPSE
-
-
-def _entwirre(gekuerzt: list[str], roh: list[str]) -> list[str]:
-    """Re-shorten names that collided, so no two lines read alike.
-
-    Field case 2026-09-25: "Heimatschutzverein - Dokumente" and
-    "Heimatschutzverein - Webseite" both became "Heimatschutzverei…". Two
-    identical lines are worse than a truncated one — the list stops telling
-    you which session to open, which is its only job.
-
-    Colliding names are rebuilt as head + ellipsis + the distinguishing tail
-    ("Heimatsc…Dokumente"). Names that do not collide keep their normal,
-    more readable shortening.
-    """
-    zaehler: dict[str, int] = {}
-    for g in gekuerzt:
-        zaehler[g] = zaehler.get(g, 0) + 1
-
-    ergebnis = []
-    for kurz, voll in zip(gekuerzt, roh):
-        if zaehler[kurz] < 2:
-            ergebnis.append(kurz)
-            continue
-        ergebnis.append(_mit_unterscheidendem_ende(voll))
-    return ergebnis
-
-
-def _mit_unterscheidendem_ende(name: str) -> str:
-    """"Heimatschutzverein - Dokumente" -> "Heimatsc…Dokumente".
-
-    Der Unterschied zwischen zwei aehnlichen Sessionnamen steht fast immer
-    hinten ("… - Dokumente" gegen "… - Webseite", "… Fachbuecher" gegen
-    "… Personal Training"). Deshalb bekommt das Ende den Vorrang, und zwar in
-    ganzen Woertern: ein mitten im Wort abgeschnittenes Ende ("…achbuecher")
-    liest sich schlechter als ein kuerzerer Anfang.
-    """
-    woerter = name[KOPF_CHARS:].replace(" - ", " ").replace(" — ", " ").split()
-
-    # Der Kopf darf schrumpfen, damit das letzte Wort ganz bleibt: ein
-    # vollstaendiges "Fachbuecher" sagt mehr als ein achtes Zeichen am Anfang.
-    # Unter KOPF_MIN_CHARS nicht, sonst faengt jede Zeile gleich an.
-    letztes = len(woerter[-1]) if woerter else 0
-    kopf_laenge = max(KOPF_MIN_CHARS,
-                      min(KOPF_CHARS, MAX_NAME_CHARS - 1 - letztes))
-    kopf = name[:kopf_laenge]
-    rest_budget = MAX_NAME_CHARS - len(kopf) - 1      # 1 fuer das Auslassungszeichen
-    ende = ""
-    for wort in reversed(woerter):
-        kandidat = wort if not ende else f"{wort} {ende}"
-        if len(kandidat) > rest_budget:
-            break
-        ende = kandidat
-
-    # Kein einziges Wort passt: Dann doch schneiden, aber vom Wortanfang her,
-    # damit wenigstens der Wortbeginn stimmt.
-    if not ende:
-        ende = (woerter[-1] if woerter else name)[:rest_budget]
-
-    return kopf + ELLIPSE + ende
+    return name[:grenze - 1].rstrip() + ELLIPSE
 
 
 def _serialised_size(payload: dict) -> int:
@@ -266,18 +190,43 @@ def merge_into_payload(payload: dict, daten: dict | None) -> dict:
     if not namen:
         return merged
 
-    # Add names while they fit. The server sorts waiting sessions first, so
-    # dropping from the end drops the least relevant.
-    passend = list(namen)
-    while passend:
-        kandidat = dict(merged)
-        kandidat["sn"] = passend
-        if len(passend) < len(namen):
-            kandidat["sx"] = len(namen) - len(passend)
-        if _serialised_size(kandidat) <= PAYLOAD_LIMIT_BYTES:
-            return kandidat
-        passend.pop()
+    # Zwei Groessen konkurrieren um dasselbe Budget: wie viele Namen gezeigt
+    # werden und wie lang jeder sein darf. Lange Namen sind nicht Kosmetik —
+    # "Heimatschutzverein - Dokumente" und "… - Webseite" sind erst ab einer
+    # gewissen Laenge ueberhaupt auseinanderzuhalten.
+    #
+    # Deshalb wird nicht geraten, sondern durchprobiert: erst moeglichst viele
+    # Namen, bei gleicher Anzahl die groesste Laenge. Timo will den Platz
+    # genutzt sehen, und was uebrig bleibt, kommt den Namen zugute.
+    # Eine Zeile mehr ist nichts wert, wenn dafuer zwei Zeilen gleich heissen:
+    # Dann sagt die Liste nicht mehr, welche Session gemeint ist, und genau
+    # dafuer ist sie da. Deshalb zwei getrennte Bestwerte — Dubletten werden
+    # nur genommen, wenn es ueberhaupt keine dublettenfreie Loesung gibt.
+    bester = None
+    bester_eindeutig = None
+    for laenge in NAME_LAENGEN:
+        gekuerzt = [_kuerzen(n, laenge) for n in namen]
+        passend = list(gekuerzt)
+        while passend:
+            kandidat = dict(merged)
+            kandidat["sn"] = passend
+            if len(passend) < len(namen):
+                kandidat["sx"] = len(namen) - len(passend)
+            if _serialised_size(kandidat) <= PAYLOAD_LIMIT_BYTES:
+                if bester is None or len(passend) > len(bester["sn"]):
+                    bester = kandidat
+                if len(set(passend)) == len(passend) and (
+                        bester_eindeutig is None
+                        or len(passend) > len(bester_eindeutig["sn"])):
+                    bester_eindeutig = kandidat
+                break
+            passend.pop()
 
-    # Not even one name fits — report how many were suppressed.
+    if bester_eindeutig is not None:
+        return bester_eindeutig
+    if bester is not None:
+        return bester
+
+    # Nicht ein einziger Name passt: Die Zahlen allein sind immer noch wahr.
     merged["sx"] = len(namen)
     return merged

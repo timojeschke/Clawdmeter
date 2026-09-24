@@ -49,8 +49,16 @@ REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
 POLL_INTERVAL = 60
 # Session fields refresh on their own, faster cadence — see the comment at
 # last_sessions_push. Must be a multiple of TICK to actually fire on time.
-SESSIONS_PUSH_INTERVAL = 10
-TICK = 5
+#
+# Drei Sekunden, passend zum Sammler auf dem Server, der seit 2026-09-25
+# ebenfalls alle drei Sekunden laeuft. Schneller bringt nichts: Was der Server
+# nicht neu geschrieben hat, kann hier nicht neu ankommen.
+SESSIONS_PUSH_INTERVAL = 3
+# Die Schleife wacht jede Sekunde auf. Sie tut dabei fast nichts — Zeiten
+# vergleichen und auf ein Ereignis warten — und sie ist die Obergrenze fuer
+# jeden schnelleren Takt darunter: Bei TICK = 5 haette ein
+# SESSIONS_PUSH_INTERVAL von 3 trotzdem nur alle 5 Sekunden gefeuert.
+TICK = 1
 CONNECT_RETRIES = 3        # D-01: attempts before giving up on a device
 CONNECT_RETRY_DELAY = 2.0  # D-01: seconds between failed connect attempts
 ZOMBIE_BREAK_LIMIT = 1     # D-03: consecutive write failures before abandoning a half-open link
