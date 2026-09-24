@@ -265,7 +265,7 @@ static lv_obj_t* lbl_spending_desc = nullptr;     // "of your monthly budget"
 static lv_obj_t* lbl_spending_status = nullptr;   // "Under pace" / "On pace" / "Over pace"
 static lv_obj_t* lbl_anim;
 static lv_obj_t* lbl_scoped;
-static lv_obj_t* scoped_punkt;   // kleiner Akzentkreis links der Quote    // per-model weekly quota, replaces the idle line      // status line: connection state + whimsical idle
+static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    // per-model weekly quota, replaces the idle line      // status line: connection state + whimsical idle
 
 // ---- Battery indicator (shared, on top) ----
 // ---- Battery indicator: drawn, not an icon ----
@@ -278,8 +278,9 @@ static lv_obj_t* scoped_punkt;   // kleiner Akzentkreis links der Quote    // pe
 #define BATT_LOW_PCT  10   // below this the fill turns red
 // Solid terracotta, the same accent the usage bars use — the header then reads
 // as part of the same design instead of a grey box borrowed from elsewhere.
-// Durchmesser des Akzentpunkts neben der Modellquote.
-#define SCOPED_PUNKT_PX 10
+// Durchmesser des Rings neben der Modellquote, und die Dicke seines Bogens.
+#define SCOPED_RING_PX    22
+#define SCOPED_RING_DICKE  3
 
 #define BATT_FILL_OPA LV_OPA_COVER
 
@@ -853,16 +854,23 @@ static void init_usage_screen(lv_obj_t* scr) {
     // to glance at, not something asking for attention.
     lbl_scoped = lv_label_create(usage_container);
     lv_label_set_text(lbl_scoped, "");
-    // Ein kleiner gefuellter Kreis in der Akzentfarbe links der Quote — das
-    // Zeichen U+25CF liegt nicht im Schriftbereich, und ein Objekt laesst sich
-    // ausserdem einfaerben, ohne die Textfarbe der Zeile mitzunehmen.
-    scoped_punkt = lv_obj_create(usage_container);
-    lv_obj_remove_style_all(scoped_punkt);
-    lv_obj_set_size(scoped_punkt, SCOPED_PUNKT_PX, SCOPED_PUNKT_PX);
-    lv_obj_set_style_radius(scoped_punkt, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(scoped_punkt, COL_ACCENT, 0);
-    lv_obj_set_style_bg_opa(scoped_punkt, LV_OPA_COVER, 0);
-    lv_obj_add_flag(scoped_punkt, LV_OBJ_FLAG_HIDDEN);
+    // Ein kleiner Ring links der Quote, dessen gefuellter Bogen den Prozentwert
+    // zeigt. Ein Balken waere hier die dritte gleiche Form auf der Seite; der
+    // Ring unterscheidet die Modellquote vom gemeinsamen Topf darueber, ohne
+    // eine eigene Zeile zu brauchen.
+    scoped_ring = lv_arc_create(usage_container);
+    lv_obj_remove_style_all(scoped_ring);
+    lv_obj_set_size(scoped_ring, SCOPED_RING_PX, SCOPED_RING_PX);
+    lv_arc_set_rotation(scoped_ring, 270);          // Start oben, im Uhrzeigersinn
+    lv_arc_set_bg_angles(scoped_ring, 0, 360);
+    lv_arc_set_range(scoped_ring, 0, 100);
+    lv_obj_remove_flag(scoped_ring, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_width(scoped_ring, SCOPED_RING_DICKE, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(scoped_ring, SCOPED_RING_DICKE, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(scoped_ring, COL_BAR_BG, LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(scoped_ring, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(scoped_ring, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_add_flag(scoped_ring, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_font(lbl_scoped, L.reset_font, 0);
     lv_obj_set_style_text_color(lbl_scoped, COL_DIM, 0);
     lv_obj_align(lbl_scoped, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
@@ -919,20 +927,22 @@ void ui_update(const UsageData* data) {
         if (data->scoped_valid) {
             lv_label_set_text_fmt(lbl_scoped, "%s  %d%%", data->scoped_name, data->scoped_pct);
             lv_obj_clear_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
-            if (scoped_punkt) {
-                // Gleiche Farblogik wie die Balken: der Punkt sagt auf einen
+            if (scoped_ring) {
+                // Gleiche Schwellen wie die Balken: der Ring sagt auf einen
                 // Blick, wie es um die Quote steht, nicht nur dass es sie gibt.
-                lv_obj_set_style_bg_color(scoped_punkt,
-                                          pct_color((float)data->scoped_pct), 0);
-                lv_obj_clear_flag(scoped_punkt, LV_OBJ_FLAG_HIDDEN);
+                lv_arc_set_value(scoped_ring, data->scoped_pct);
+                lv_obj_set_style_arc_color(scoped_ring,
+                                           pct_color((float)data->scoped_pct),
+                                           LV_PART_INDICATOR);
+                lv_obj_clear_flag(scoped_ring, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_update_layout(lbl_scoped);
-                lv_obj_align_to(scoped_punkt, lbl_scoped,
-                                LV_ALIGN_OUT_LEFT_MID, -SCOPED_PUNKT_PX, 0);
+                lv_obj_align_to(scoped_ring, lbl_scoped,
+                                LV_ALIGN_OUT_LEFT_MID, -12, 0);
             }
             if (lbl_anim) lv_obj_add_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
-            if (scoped_punkt) lv_obj_add_flag(scoped_punkt, LV_OBJ_FLAG_HIDDEN);
+            if (scoped_ring) lv_obj_add_flag(scoped_ring, LV_OBJ_FLAG_HIDDEN);
             if (lbl_anim) lv_obj_clear_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
         }
     }
