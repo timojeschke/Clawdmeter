@@ -121,6 +121,16 @@ static bool parse_json(const char* json, UsageData* out) {
     out->clock_fmt = doc["tf"] | 24;
     out->ok = doc["ok"] | false;
 
+    // Per-model weekly quota ("Fable 12%"). Optional: only accounts that have
+    // such a limit get it, and only a daemon that reads /api/oauth/usage sends
+    // it. Absent means unknown, and the UI hides the line rather than showing
+    // a zero that would read as "nothing used this week".
+    out->scoped_valid = doc["fn"].is<const char*>() && doc["fp"].is<int>();
+    if (out->scoped_valid) {
+        strlcpy(out->scoped_name, doc["fn"] | "", sizeof(out->scoped_name));
+        out->scoped_pct = doc["fp"] | 0;
+    }
+
     // Session fields are optional — the daemon only sends them when it has been
     // pointed at a sessions server. "sw" absent means unknown, which the UI
     // must not render as three zeros.

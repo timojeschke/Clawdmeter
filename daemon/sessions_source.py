@@ -22,13 +22,26 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# Firmware truncates at BLE_BUF_SIZE - 1 = 511 bytes. Stay below it with room
-# for the fields poll_api adds after this merge runs.
-PAYLOAD_LIMIT_BYTES = 480
+# The firmware buffer holds 511 bytes, and that number is a trap: it is only
+# reachable with a write that asks for a response. The daemon's normal write
+# asks for none, and such a write is capped at ATT_MTU-3 — 244 bytes at the
+# usual negotiated MTU of 247. Windows rejects anything longer outright
+# ("Falscher Parameter") instead of truncating it.
+#
+# Measured on the real link 2026-09-25: base payload without sessions ~125
+# bytes, with five waiting names 271 — which failed seven times in a row and
+# took the usage numbers down with it.
+#
+# So the budget is sized for the SMALL write, not the buffer. Sessions then
+# arrive on their own merit instead of depending on long-write support, and
+# the names that do not fit are counted in "sx" rather than dropped silently.
+PAYLOAD_LIMIT_BYTES = 230
 
 # Long session names ("Stötefalke - Webseite Personal Training") eat the budget
-# without adding information — the first words identify the session.
-MAX_NAME_CHARS = 22
+# without adding information — the first words identify the session. Every
+# umlaut costs six bytes here, not two: the payload is serialised with
+# ensure_ascii, so "ö" travels as ö.
+MAX_NAME_CHARS = 18
 
 # A session list is worth showing only while it is current. Past this the
 # device shows counts without names rather than a plausible-looking lie.
