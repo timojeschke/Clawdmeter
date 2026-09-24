@@ -181,7 +181,11 @@ def test_zombie_link_break_after_limit_consecutive_failures(monkeypatch):
 
     async def fake_write_payload(payload, kleiner=None):
         write_call_count[0] += 1
-        return False  # always fail — zombie link
+        # Neuer Vertrag (2026-09-25): write_payload gibt die tatsaechlich
+        # gesendete Nutzlast oder None zurueck, nie mehr einen bool — sonst
+        # waere "False is not None" in connect_and_run truthy und ein
+        # Fehlschlag zaehlte faelschlich als Erfolg.
+        return None  # always fail — zombie link
 
     fake_session = AsyncMock()
     fake_session.write_payload = fake_write_payload
@@ -219,29 +223,20 @@ def test_zombie_counter_resets_on_success_with_raised_limit(monkeypatch):
     stop_event = asyncio.run(_make_event(False))
     mock_client = _make_zombie_client()
 
-    # Sequence: False (counter=1), True (counter reset to 0), False (counter=1 again), break
-    write_results = iter([False, True, False])
-    write_call_count = [0]
-
-    async def fake_write_payload(payload, kleiner=None):
-        write_call_count[0] += 1
-        try:
-            return next(write_results)
-        except StopIteration:
-            return False
-
-    # After success, subsequent False write breaks at limit=2 (requires 2 consecutive)
-    # With limit=2: False (1), True (reset to 0), False (1), False (2 -> break)
-    # But we only have 3 items in write_results; after StopIteration returns False.
-    # Let's use a longer sequence to ensure reset-then-2-failures trip the break.
-    write_results2 = [False, True, False, False]
+    # Neuer Vertrag: Erfolg liefert die gesendete Nutzlast (dict), Fehlschlag
+    # None — nie mehr bool.
+    #
+    # Folge: Fehlschlag (Zaehler 1), Erfolg (Zaehler zurueck auf 0), zwei
+    # Fehlschlaege (1, dann 2 -> Abbruch). Vier Eintraege, damit der Abbruch
+    # nach dem Zuruecksetzen wirklich erreicht wird.
+    write_results2 = [None, {"ok": True}, None, None]
     write_call_count2 = [0]
 
     async def fake_write_payload2(payload, kleiner=None):
         write_call_count2[0] += 1
         if write_call_count2[0] - 1 < len(write_results2):
             return write_results2[write_call_count2[0] - 1]
-        return False
+        return None
 
     fake_session = AsyncMock()
     fake_session.write_payload = fake_write_payload2
@@ -265,11 +260,11 @@ def test_zombie_counter_resets_on_success_with_raised_limit(monkeypatch):
                side_effect=fast_wait_for):
         result = _run(connect_and_run(device, stop_event))
 
-    # With limit=2 and sequence [False, True, False, False]:
-    # cycle 1: False -> consecutive_failures=1 (no break, limit=2)
-    # cycle 2: True  -> consecutive_failures=0 (reset)
-    # cycle 3: False -> consecutive_failures=1 (no break)
-    # cycle 4: False -> consecutive_failures=2 -> break
+    # With limit=2 and sequence [None, {"ok": True}, None, None]:
+    # cycle 1: None    -> consecutive_failures=1 (no break, limit=2)
+    # cycle 2: Erfolg  -> consecutive_failures=0 (reset)
+    # cycle 3: None    -> consecutive_failures=1 (no break)
+    # cycle 4: None    -> consecutive_failures=2 -> break
     assert write_call_count2[0] == 4, (
         f"Expected 4 write calls (reset-on-success logic), got {write_call_count2[0]}"
     )
@@ -286,7 +281,7 @@ def test_zombie_break_disconnect_called_in_finally(monkeypatch):
     mock_client = _make_zombie_client()
 
     async def fake_write_payload(payload, kleiner=None):
-        return False  # always fail
+        return None  # always fail — neuer Vertrag: Fehlschlag ist None, nicht False
 
     fake_session = AsyncMock()
     fake_session.write_payload = fake_write_payload
@@ -322,7 +317,7 @@ def test_zombie_break_returns_used_successfully_false(monkeypatch):
     mock_client = _make_zombie_client()
 
     async def fake_write_payload(payload, kleiner=None):
-        return False
+        return None  # always fail — neuer Vertrag: Fehlschlag ist None, nicht False
 
     fake_session = AsyncMock()
     fake_session.write_payload = fake_write_payload
@@ -611,12 +606,17 @@ def test_start_notify_oserror_does_not_crash_connect_and_run():
 # SC#2 field report: write_payload() OSError must not crash the daemon thread
 # ---------------------------------------------------------------------------
 
-def test_write_payload_oserror_returns_false_not_raises():
+def test_write_payload_oserror_returns_none_not_raises():
     """SC#2 regression: write_gatt_char can raise a raw OSError/WinError (NOT a
     BleakError) when the peer GATT server goes transiently unavailable mid-write.
-    write_payload must catch it and return False — tripping the zombie-link break
+    write_payload must catch it and return None — tripping the zombie-link break
     for a clean reconnect — instead of propagating an uncaught exception that
     silently kills the daemon=True background thread and freezes the tray.
+
+    Vertragswechsel (2026-09-25): write_payload liefert seither die tatsaechlich
+    gesendete Nutzlast (dict) oder None statt True/False — die Nutzlast hier hat
+    weder Session- noch kleinere Felder zum Kuerzen, darum bricht write_payload
+    sofort mit None ab, statt eine gleich grosse "kleinere" Fassung zu versuchen.
     """
     mock_client = AsyncMock()
     mock_client.write_gatt_char = AsyncMock(
@@ -626,18 +626,70 @@ def test_write_payload_oserror_returns_false_not_raises():
 
     result = _run(session.write_payload({"ok": True}))
 
-    assert result is False  # caught and reported, not raised
+    assert result is None  # caught and reported, not raised, and nothing was sent
     assert mock_client.write_gatt_char.call_count == 1
 
 
-def test_write_payload_bleak_error_still_returns_false():
-    """The pre-existing BleakError path must keep returning False (no regression
-    from widening the except to also cover OSError)."""
+def test_write_payload_bleak_error_still_returns_none():
+    """The pre-existing BleakError path must keep signalling failure (no regression
+    from widening the except to also cover OSError).
+
+    Vertragswechsel: der alte Test prüfte `is False`; seit write_payload dict|None
+    zurückgibt, ist None der Fehlschlag-Wert, nicht mehr False (s. Docstring oben).
+    """
     mock_client = AsyncMock()
     mock_client.write_gatt_char = AsyncMock(side_effect=BleakError("disconnected"))
     session = Session(mock_client)
 
-    assert _run(session.write_payload({"ok": True})) is False
+    assert _run(session.write_payload({"ok": True})) is None
+
+
+def test_write_payload_falls_back_to_kleiner_and_returns_it():
+    """Neuer Fall aus dem Umbau vom 2026-09-25 (Feldbefund PC-Session): Scheitert
+    der grosse Schreibvorgang und gelingt der kleinere, muss write_payload die
+    tatsaechlich gesendete KLEINERE Nutzlast zurueckgeben — nicht die grosse, die
+    nie ankam. Vorher hielt sich der Aufrufer an die grosse Fassung, obwohl nur
+    die kleine ueber Funk ging, und der naechste "hat sich etwas geaendert?"
+    lief gegen etwas, das nie gesendet wurde.
+    """
+    mock_client = AsyncMock()
+    # Erster Schreibversuch (die grosse Nutzlast) scheitert, der zweite (die
+    # kleinere, ohne "sn") gelingt.
+    mock_client.write_gatt_char = AsyncMock(
+        side_effect=[BleakError("write failed"), None]
+    )
+    session = Session(mock_client)
+
+    gross = {"ok": True, "sn": ["Session A", "Session B"]}
+    klein = {"ok": True}
+
+    result = _run(session.write_payload(gross, klein))
+
+    assert result == klein
+    assert result != gross
+    assert mock_client.write_gatt_char.call_count == 2
+
+
+def test_write_payload_was_not_found_tries_only_once():
+    """Scheitert der Schreibversuch mit 'was not found' im Fehlertext (Windows
+    kennt die GATT-Characteristic nicht mehr), ueberspringt write_payload alle
+    weiteren Stufen: kleinere Nutzlasten scheitern an derselben unbekannten
+    Characteristic genauso, ein zweiter Versuch waere nur Verzoegerung vor dem
+    noetigen Neuaufbau der Verbindung.
+    """
+    mock_client = AsyncMock()
+    mock_client.write_gatt_char = AsyncMock(
+        side_effect=BleakError("Characteristic 0002 was not found!")
+    )
+    session = Session(mock_client)
+
+    gross = {"ok": True, "sn": ["Session A"]}
+    klein = {"ok": True}
+
+    result = _run(session.write_payload(gross, klein))
+
+    assert result is None
+    assert mock_client.write_gatt_char.call_count == 1
 
 
 # ---------------------------------------------------------------------------

@@ -538,6 +538,8 @@ class Session:
     def __init__(self, client: BleakClient) -> None:
         self.client = client
         self.refresh_requested = asyncio.Event()
+        # Siehe write_payload: Unterscheidet "zu gross" von "Dienst unbekannt".
+        self._letzter_fehler_kennt_dienst_nicht = False
 
     def _on_refresh(self, _char, _data: bytearray) -> None:
         log("Refresh requested by device")
@@ -574,8 +576,9 @@ class Session:
             return False
         return mtu > 0 and groesse <= mtu - 3
 
-    async def write_payload(self, payload: dict, kleiner: dict | None = None) -> bool:
-        """Sende die Nutzlast, notfalls in Stufen.
+    async def write_payload(self, payload: dict,
+                            kleiner: dict | None = None) -> dict | None:
+        """Sende die Nutzlast, notfalls in Stufen. Gibt zurueck, was ankam.
 
         Drei Stufen, von grosszuegig nach sicher: die uebergebene Nutzlast,
         dann eine kleinere mit weniger Sessionnamen, dann gar keine
@@ -583,21 +586,34 @@ class Session:
         grosse Schreibweg reicht bis an den Firmware-Puffer —, ohne dass ein
         Fehlschlag die Nutzungszahlen mitreisst. Die sind der Zweck des
         Geraets, die Namensliste ist das Entbehrliche.
+
+        Zurueckgegeben wird die tatsaechlich gesendete Fassung, nicht nur
+        True: Sonst merkt sich der Aufrufer die grosse Fassung, obwohl die
+        kleine ankam, und der naechste Vergleich "hat sich etwas geaendert?"
+        laeuft gegen etwas, das nie gesendet wurde. Befund der PC-Session,
+        2026-09-25.
         """
         if await self._sende(payload):
-            return True
+            return payload
+
+        # "was not found" heisst: Windows kennt die Characteristic nicht (mehr).
+        # Das ist keine Groessenfrage, und kleinere Nutzlasten scheitern genauso.
+        # Weitere Stufen waeren nur Verzoegerung vor dem noetigen Neuaufbau.
+        if self._letzter_fehler_kennt_dienst_nicht:
+            log("GATT-Dienst unbekannt — Verbindung neu aufbauen statt kuerzen.")
+            return None
 
         if kleiner is not None and kleiner != payload:
             log("Write failed — retrying with a shorter session list.")
             if await self._sende(kleiner):
-                return True
+                return kleiner
 
         ohne_sessions = {k: v for k, v in payload.items()
                          if k not in ("sw", "sa", "sg", "sn", "sx")}
         if len(ohne_sessions) == len(payload):
-            return False
+            return None
         log("Write failed with session data — retrying without it.")
-        return await self._sende(ohne_sessions)
+        return ohne_sessions if await self._sende(ohne_sessions) else None
 
     async def _sende(self, payload: dict) -> bool:
         # ensure_ascii=False: umlauts travel as UTF-8, which the firmware
@@ -612,6 +628,9 @@ class Session:
                 response=not self._write_ohne_antwort_moeglich(len(data)))
             return True
         except (BleakError, OSError) as e:
+            # Merken, damit write_payload die Stufen ueberspringen kann, wenn
+            # nicht die Groesse das Problem ist.
+            self._letzter_fehler_kennt_dienst_nicht = "was not found" in str(e)
             # WinRT can raise a raw OSError/WinError (NOT wrapped as BleakError)
             # when the peer GATT server goes transiently unavailable mid-write —
             # the same failure class setup_refresh_subscription() guards against.
@@ -839,8 +858,9 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                             payload["fn"], payload["fp"] = scoped[0][:10], scoped[1]
                         letzte_nutzlast = dict(payload)
                         payload, payload_sicher = await add_session_fields_paar(payload)
-                        if await session.write_payload(payload, payload_sicher):
-                            zuletzt_gesendet = dict(payload)
+                        gesendet = await session.write_payload(payload, payload_sicher)
+                        if gesendet is not None:
+                            zuletzt_gesendet = dict(gesendet)
                             last_poll = time.time()
                             last_sessions_push = last_poll
                             used_successfully = True
@@ -890,8 +910,9 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                 # so the two always differed and the beat wrote every 10 s
                 # even when nothing had changed (field observation 2026-09-25).
                 if aktualisiert != zuletzt_gesendet:
-                    if await session.write_payload(aktualisiert, sicher):
-                        zuletzt_gesendet = dict(aktualisiert)
+                    gesendet = await session.write_payload(aktualisiert, sicher)
+                    if gesendet is not None:
+                        zuletzt_gesendet = dict(gesendet)
                         last_sessions_push = time.time()
                         consecutive_failures = 0
                         # Auch das ist ein erfolgreicher Schreibvorgang. Ohne

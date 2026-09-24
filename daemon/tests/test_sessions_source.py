@@ -267,8 +267,12 @@ def _session(client):
 def test_grosse_nutzlast_erzwingt_write_mit_antwort(fuellung, erwartet_response):
     import asyncio
     client = _AttrappeClient()
-    erfolg = asyncio.run(_session(client).write_payload({"s": 1, "f": fuellung}))
-    assert erfolg is True
+    nutzlast = {"s": 1, "f": fuellung}
+    erfolg = asyncio.run(_session(client).write_payload(nutzlast))
+    # Vertragswechsel (2026-09-25): write_payload liefert die tatsaechlich
+    # gesendete Nutzlast zurueck, nicht mehr True — sonst merkt sich der
+    # Aufrufer die grosse Fassung, obwohl nur die kleine ankam.
+    assert erfolg == nutzlast
     assert len(client.schreibvorgaenge) == 1
     _, response = client.schreibvorgaenge[0]
     assert response is erwartet_response
@@ -286,7 +290,10 @@ def test_fehlgeschlagener_schreibvorgang_liefert_nutzung_ohne_sessions_nach():
 
     erfolg = asyncio.run(_session(client).write_payload(nutzlast))
 
-    assert erfolg is True
+    # Vertragswechsel: erfolgreich zurueckgesendet wird die tatsaechlich
+    # gesendete (gekuerzte) Fassung, nicht True — genau die Fassung ohne
+    # Sessionfelder, die unten am zweiten Schreibvorgang geprueft wird.
+    assert erfolg == {"s": 37, "w": 92}
     assert len(client.schreibvorgaenge) == 2
     zweiter = json.loads(client.schreibvorgaenge[1][0])
     assert zweiter == {"s": 37, "w": 92}
@@ -299,7 +306,9 @@ def test_nutzlast_ohne_sessions_wird_nicht_zweimal_versucht():
     import asyncio
     client = _AttrappeClient(schlaegt_fehl_ab=1)
     erfolg = asyncio.run(_session(client).write_payload({"s": 37}))
-    assert erfolg is False
+    # Vertragswechsel: endgueltiger Fehlschlag ist None, nicht False — write_payload
+    # gibt seit 2026-09-25 dict|None zurueck.
+    assert erfolg is None
     assert len(client.schreibvorgaenge) == 1
 
 

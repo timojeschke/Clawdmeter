@@ -113,7 +113,7 @@ static void compute_layout(const BoardCaps& c) {
     // Tiempos for the counts, not Styrene: the serif is Claude's display face
     // and it ties the three numbers to the "Sessions" title above them.
     L.sess_count_font = &font_tiempos_56;
-    L.sess_name_font = &font_styrene_24;
+    L.sess_name_font = &font_styrene_28;
     L.sess_caption_font = &font_styrene_20;
     L.batt_y = L.title_y + 6;
     // Deliberately larger than the 48 px icon it replaced: at arm's length on
@@ -242,7 +242,7 @@ static lv_obj_t* sess_more_lbl;         // "+N more" when the list was trimmed
 static int16_t   sess_row_h;            // row pitch, for resizing the card
 static int16_t   sess_first_row_y;      // y of the first name inside the card
 static int16_t   sess_list_max_h;       // card height when it runs to the bottom
-#define SESS_ZEILEN_WUNSCH 5
+#define SESS_ZEILEN_WUNSCH 4
 static int16_t   sess_max_zeilen;       // wie viele Namen wirklich in die Karte passen
 static lv_obj_t* sess_hint_lbl;         // shown when no session data has arrived
 static lv_obj_t* lbl_title;
@@ -692,11 +692,27 @@ static void init_sessions_screen(lv_obj_t* scr) {
     // stat block with loose text under it. Only the waiting ones are listed:
     // running and parked sessions ask nothing of anyone.
     const int16_t liste_y = L.content_y + zahlen_h + L.usage_panel_gap;
-    // Gemessen (Simulator, 480x480): Bei 4 px Zeilenabstand ergeben sich
-    // 35 px je Zeile, und in die 173 px der Karte passen genau vier. Timo will
-    // fuenf. Zwei Pixel weniger Abstand reichen dafuer — bei 24 px Schrift
-    // stehen die Zeilen dann dichter, aber nicht gedraengt.
-    const int16_t zeile_h = L.sess_name_font->line_height + 2;
+    const int16_t erste_zeile = L.sess_caption_font->line_height + 6;
+
+    // Die Zeilenhoehe ergibt sich aus der Karte, nicht aus der Schrift.
+    //
+    // Timo, 2026-09-25: "mach die so gross, dass 4 Stueck genau hinpassen,
+    // plus der Hinweis +xx more." Also nicht so viele Zeilen wie moeglich,
+    // sondern genau vier, die den Platz ausfuellen. Eine Zeile bleibt fuer
+    // "+N more" reserviert — die will er ausdruecklich sehen.
+    //
+    // Das muss VOR dem Erzeugen der Etiketten stehen: Sie bekommen ihre
+    // Position einmal beim Aufbau, eine spaeter geaenderte Hoehe erreicht sie
+    // nicht mehr.
+    sess_list_max_h = L.scr_h - liste_y - L.margin;
+    const int16_t nutzbar = sess_list_max_h - erste_zeile
+                          - L.sess_caption_font->line_height - L.panel_pad_y;
+    sess_max_zeilen = SESS_ZEILEN_WUNSCH;
+    const int16_t verteilt = nutzbar / SESS_ZEILEN_WUNSCH;
+    // Nie unter die Schrifthoehe, sonst ueberlappen die Zeilen.
+    const int16_t zeile_h = (verteilt > L.sess_name_font->line_height)
+                            ? verteilt
+                            : (int16_t)(L.sess_name_font->line_height + 2);
 
     sess_list_panel = make_panel(sessions_container, L.margin, liste_y,
                                  L.content_w, zeile_h * 2);
@@ -706,7 +722,6 @@ static void init_sessions_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_color(sess_list_caption, COL_DIM, 0);
     lv_label_set_text(sess_list_caption, "Waiting for input");
     lv_obj_set_pos(sess_list_caption, 0, 0);
-    const int16_t erste_zeile = L.pace_font->line_height + 6;
 
     for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
         sess_name_lbl[i] = lv_label_create(sess_list_panel);
@@ -733,21 +748,6 @@ static void init_sessions_screen(lv_obj_t* scr) {
     // Row geometry the update pass needs to resize the card to its content.
     sess_row_h = zeile_h;
     sess_first_row_y = erste_zeile;
-    sess_list_max_h = L.scr_h - liste_y - L.margin;
-
-    // Wie viele Namen wirklich in die Karte passen. Ohne diese Rechnung lief
-    // der letzte Name unten heraus und "+N more" lag darueber — die Zahl der
-    // Etiketten (SESSIONS_MAX_NAMES) sagt nichts ueber den Platz auf dem
-    // Schirm. Eine Zeile bleibt fuer "+N more" reserviert.
-    const int16_t nutzbar = sess_list_max_h - erste_zeile
-                          - L.sess_caption_font->line_height - L.panel_pad_y;
-    sess_max_zeilen = nutzbar / zeile_h;
-    if (sess_max_zeilen < 1) sess_max_zeilen = 1;
-    // Timos Wunsch, 2026-09-25: vier Namen. Als eigene Obergrenze gesetzt und
-    // nicht dem Platz ueberlassen — sonst wandert die Zahl mit der naechsten
-    // Schriftaenderung, und niemand weiss mehr, dass vier gewollt waren.
-    if (sess_max_zeilen > SESS_ZEILEN_WUNSCH) sess_max_zeilen = SESS_ZEILEN_WUNSCH;
-    if (sess_max_zeilen > SESSIONS_MAX_NAMES) sess_max_zeilen = SESSIONS_MAX_NAMES;
 
     // Shown instead of three zeros when nothing has arrived: "0 waiting" and
     // "nothing known" look identical otherwise, and mean opposite things.
