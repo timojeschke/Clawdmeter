@@ -52,6 +52,8 @@ struct Layout {
     int16_t logo_y;                  // logo top edge
     int16_t batt_y;                  // battery icon top edge
     int16_t batt_w;                  // battery icon width, for position math
+    const lv_font_t* batt_font;      // battery percentage beside the icon
+    int16_t batt_lbl_gap;            // gap between percentage and icon
 
     // Pairing hint / idle screen
     int16_t pair_y1, pair_y2, pair_y3;
@@ -98,6 +100,8 @@ static void compute_layout(const BoardCaps& c) {
     L.logo_y = L.title_y - 10;
     L.batt_y = L.title_y;
     L.batt_w = ICON_BATTERY_W;
+    L.batt_font = &font_styrene_20;
+    L.batt_lbl_gap = 6;
     L.pair_y1 = 40;
     L.pair_y2 = 120;
     L.pair_y3 = 160;
@@ -162,6 +166,8 @@ static void compute_layout(const BoardCaps& c) {
         L.logo_y = 2;
         L.batt_y = 10;
         L.batt_w = ICON_BATTERY_SMALL_W;
+        L.batt_font = &font_styrene_12;
+        L.batt_lbl_gap = 3;
         L.pair_y1 = 12;
         L.pair_y2 = 56;
         L.pair_y3 = 80;
@@ -219,6 +225,7 @@ static lv_obj_t* lbl_anim;      // status line: connection state + whimsical idl
 
 // ---- Battery indicator (shared, on top) ----
 static lv_obj_t* battery_img;
+static lv_obj_t* battery_lbl;   // charge percentage, left of the icon
 static lv_obj_t* logo_img;
 static lv_image_dsc_t battery_dscs[5];  // empty, low, medium, full, charging
 
@@ -582,11 +589,22 @@ void ui_init(void) {
     battery_img = lv_image_create(scr);
     lv_image_set_src(battery_img, &battery_dscs[0]);
     lv_obj_set_pos(battery_img, L.scr_w - L.batt_w - L.margin, L.batt_y);
+
+    // Percentage beside the icon. Positioned by ui_update_battery() rather
+    // than here, because the label resizes with the text ("9%" vs "100%")
+    // and lv_obj_align_to() is a one-shot placement.
+    battery_lbl = lv_label_create(scr);
+    lv_obj_set_style_text_font(battery_lbl, L.batt_font, 0);
+    lv_obj_set_style_text_color(battery_lbl, THEME_DIM, 0);
+    lv_label_set_text(battery_lbl, "");
+
     // Boards without battery telemetry never show the indicator (per the HAL
     // contract; previously every board drew the empty-battery glyph).
     if (!board_caps().has_battery) {
         lv_obj_del(battery_img);
         battery_img = nullptr;
+        lv_obj_del(battery_lbl);
+        battery_lbl = nullptr;
     }
 }
 
@@ -759,8 +777,17 @@ void ui_tick_anim(void) {
 static screen_t prev_non_splash_screen = SCREEN_USAGE;
 static void apply_battery_visibility(void) {
     if (!battery_img) return;
-    if (current_screen == SCREEN_SPLASH) lv_obj_add_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
-    else                                  lv_obj_clear_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
+    const bool hide = (current_screen == SCREEN_SPLASH);
+    if (hide) lv_obj_add_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
+    else      lv_obj_clear_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
+    if (!battery_lbl) return;
+    // The label also stays hidden when the percentage is unknown (-1), which
+    // ui_update_battery() signals by clearing its text.
+    if (hide || lv_label_get_text(battery_lbl)[0] == '\0') {
+        lv_obj_add_flag(battery_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(battery_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void global_click_cb(lv_event_t* e) {
@@ -826,5 +853,17 @@ void ui_update_battery(int percent, bool charging) {
         idx = 3;
     }
     lv_image_set_src(battery_img, &battery_dscs[idx]);
+
+    if (battery_lbl) {
+        if (percent < 0) {
+            lv_label_set_text(battery_lbl, "");
+        } else {
+            lv_label_set_text_fmt(battery_lbl, "%d%%", percent);
+            // Re-align on every update: the label's width changes with the
+            // digit count, and lv_obj_align_to() does not track that.
+            lv_obj_align_to(battery_lbl, battery_img,
+                            LV_ALIGN_OUT_LEFT_MID, -L.batt_lbl_gap, 0);
+        }
+    }
     apply_battery_visibility();
 }
