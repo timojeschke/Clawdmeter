@@ -29,6 +29,15 @@ void ui_prev_screen(void);
 void ui_auto_rotate_tick(void);
 void ui_auto_rotate_set(bool an);
 
+// Weiches Aufblenden beim Seitenwechsel. Abschaltbar — auf Geraeten ohne
+// PSRAM ist ein hartes Umschalten ruhiger als eine stockende Bewegung.
+void ui_set_seitenanimation(bool an);
+
+// Misst den letzten Seitenwechsel und schreibt Bildzahl und groesste Luecke
+// auf die serielle Konsole. Aus der Hauptschleife aufzurufen — so laesst sich
+// "ruckelt es?" beantworten, ohne das Display zu sehen.
+void ui_wechsel_messung_tick(void);
+
 void ui_toggle_splash(void);
 screen_t ui_get_current_screen(void);
 void ui_update_ble_status(ble_state_t state, const char* name, const char* mac);

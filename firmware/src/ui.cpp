@@ -537,13 +537,15 @@ static void battery_create(lv_obj_t* parent) {
     battery_sub_lbl = lv_label_create(parent);
     lv_obj_set_style_text_font(battery_sub_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(battery_sub_lbl, THEME_DIM, 0);
-    lv_obj_set_style_text_align(battery_sub_lbl, LV_TEXT_ALIGN_RIGHT, 0);
-    // Wider than the battery and right-aligned: "⚡ Charging" and "~3h 20m"
-    // are both longer than the body, and at body width the symbol wrapped onto
-    // its own line. The extra room grows leftwards, so the right edge stays
-    // flush with the battery outline.
-    lv_obj_set_width(battery_sub_lbl, total_w + BATT_SUB_EXTRA_W);
-    lv_obj_set_pos(battery_sub_lbl, body_x - BATT_SUB_EXTRA_W, L.batt_y + L.batt_h + 3);
+    // Mittig unter der Batterie, nicht rechtsbuendig: Timo, 2026-09-25, "die
+    // restlaufzeit soll direkt unter der batterie stehen". Rechtsbuendig sah
+    // sie nach links verrutscht aus, weil das Etikett breiter ist als der
+    // Koerper — breiter muss es sein, sonst bricht "ca. 200 min" um.
+    lv_obj_set_style_text_align(battery_sub_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(battery_sub_lbl, total_w + 2 * BATT_SUB_EXTRA_W);
+    lv_obj_set_pos(battery_sub_lbl,
+                   body_x + total_w / 2 - (total_w + 2 * BATT_SUB_EXTRA_W) / 2,
+                   L.batt_y + L.batt_h + 3);
     lv_label_set_long_mode(battery_sub_lbl, LV_LABEL_LONG_CLIP);
     lv_label_set_text(battery_sub_lbl, "");
 }
@@ -708,11 +710,12 @@ static void init_sessions_screen(lv_obj_t* scr) {
     const int16_t nutzbar = sess_list_max_h - erste_zeile
                           - L.sess_caption_font->line_height - L.panel_pad_y;
     sess_max_zeilen = SESS_ZEILEN_WUNSCH;
-    const int16_t verteilt = nutzbar / SESS_ZEILEN_WUNSCH;
-    // Nie unter die Schrifthoehe, sonst ueberlappen die Zeilen.
-    const int16_t zeile_h = (verteilt > L.sess_name_font->line_height)
-                            ? verteilt
-                            : (int16_t)(L.sess_name_font->line_height + 2);
+    // Timo, 2026-09-25: "bisschen mehr abstand zum +xx more, die abstaende
+    // zwischen den sessions einfach verringern." Die Zeilen stehen deshalb
+    // dicht beieinander, statt den Platz gleichmaessig zu fuellen — was
+    // uebrig bleibt, wird zur Luft vor der Fussnote. Die sitzt ohnehin am
+    // unteren Rand der Karte.
+    const int16_t zeile_h = L.sess_name_font->line_height + 4;
 
     sess_list_panel = make_panel(sessions_container, L.margin, liste_y,
                                  L.content_w, zeile_h * 2);
@@ -1207,32 +1210,83 @@ static void global_click_cb(lv_event_t* e) {
     }
 }
 
-// Die neue Seite faehrt herein, statt zu erscheinen. Ein Schnitt auf einem
-// Tischdisplay wirkt wie ein Aussetzer; eine Bewegung sagt "andere Seite".
+// Die neue Seite blendet auf, statt hereinzufahren.
 //
-// Die Richtung traegt dabei Bedeutung: Vorwaerts kommt die Seite von rechts,
-// rueckwaerts von links — so, wie man ein Blatt schiebt. Das gilt fuer die
-// Knoepfe und fuer den automatischen Wechsel gleichermassen, sonst fuehlt sich
-// dasselbe Ereignis unterschiedlich an.
+// Der Schub ueber die volle Breite war auf dem Geraet sichtbar hakelig, und
+// das ist kein Einstellungsfehler: Der C6 hat kein PSRAM, LVGL zeichnet in
+// schmalen Streifen, und ein Inhalt, der sich ueber 480 Pixel bewegt, faellt
+// bei jedem Bild komplett neu an. Timo, 2026-09-25: "das ist ja mega kacke
+// hakelig. wenns nicht anders geht, die animation von ganz am anfang einfach
+// reinmachen."
 //
-// Kurz gehalten: Das Geraet wird im Vorbeigehen gelesen, niemand wartet gern
-// auf eine Animation.
-#define SEITENWECHSEL_MS 260
+// Das Aufblenden aendert nur einen Wert je Bild statt die Geometrie und
+// bleibt deshalb ruhig. Wer es ganz ohne will, setzt ui_set_seitenanimation
+// auf false — dann schaltet das Geraet hart um, was ehrlicher ist als eine
+// stockende Bewegung.
+#define SEITENWECHSEL_MS 200
 
-static void seite_hereinfahren(lv_obj_t* container, int16_t von_x) {
+static bool seitenanimation_an = true;
+
+void ui_set_seitenanimation(bool an) { seitenanimation_an = an; }
+
+// Messung des Seitenwechsels. Ob eine Animation "ruckelt", ist eine Frage an
+// das Auge — aber die Zahlen dahinter sind messbar, und die PC-Session sieht
+// das Display nicht, nur die serielle Konsole. Deshalb misst die Firmware
+// selbst: Wie viele Bilder wurden waehrend des Uebergangs gezeichnet, und wie
+// gross war die groesste Luecke zwischen zwei Bildern.
+//
+// Fluessig heisst rund 30 Bilder je Sekunde, also Luecken unter 33 ms. Eine
+// groesste Luecke von 100 ms und mehr sieht man als Stocken.
+static uint32_t wechsel_start_ms;
+static uint32_t wechsel_letztes_bild_ms;
+static uint16_t wechsel_bilder;
+static uint16_t wechsel_groesste_luecke_ms;
+static bool     wechsel_laeuft;
+
+static void wechsel_messung_starten(void) {
+    wechsel_start_ms = lv_tick_get();
+    wechsel_letztes_bild_ms = wechsel_start_ms;
+    wechsel_bilder = 0;
+    wechsel_groesste_luecke_ms = 0;
+    wechsel_laeuft = true;
+}
+
+// Aus der Hauptschleife, einmal je gezeichnetem Bild.
+void ui_wechsel_messung_tick(void) {
+    if (!wechsel_laeuft) return;
+    const uint32_t jetzt = lv_tick_get();
+    const uint32_t luecke = jetzt - wechsel_letztes_bild_ms;
+    wechsel_letztes_bild_ms = jetzt;
+    if (luecke > wechsel_groesste_luecke_ms) {
+        wechsel_groesste_luecke_ms = (uint16_t)luecke;
+    }
+    wechsel_bilder++;
+
+    if (jetzt - wechsel_start_ms < SEITENWECHSEL_MS) return;
+    wechsel_laeuft = false;
+    Serial.printf("Seitenwechsel: %u ms, %u Bilder, groesste Luecke %u ms\n",
+                  (unsigned)(jetzt - wechsel_start_ms),
+                  (unsigned)wechsel_bilder,
+                  (unsigned)wechsel_groesste_luecke_ms);
+}
+
+static void seite_aufblenden(lv_obj_t* container) {
     if (!container) return;
+    if (!seitenanimation_an) {
+        lv_obj_set_style_opa(container, LV_OPA_COVER, 0);
+        return;
+    }
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, container);
-    lv_anim_set_values(&a, von_x, 0);
+    lv_anim_set_values(&a, LV_OPA_40, LV_OPA_COVER);
     lv_anim_set_time(&a, SEITENWECHSEL_MS);
-    // ease_out: schnell anfahren, sanft ankommen — das liest sich als
-    // "gelandet" statt als "abgebrochen".
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_set_exec_cb(&a, [](void* obj, int32_t v) {
-        lv_obj_set_x((lv_obj_t*)obj, (int16_t)v);
+        lv_obj_set_style_opa((lv_obj_t*)obj, (lv_opa_t)v, 0);
     });
     lv_anim_start(&a);
+    wechsel_messung_starten();
 }
 
 // Richtung des naechsten Wechsels: +1 vorwaerts, -1 rueckwaerts. Wird von
@@ -1243,7 +1297,7 @@ static int8_t wechsel_richtung = 1;
 
 void ui_show_screen(screen_t screen) {
     const bool wechsel = (screen != current_screen);
-    const int16_t von_x = wechsel_richtung >= 0 ? L.scr_w : -L.scr_w;
+
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
     if (sessions_container) lv_obj_add_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
@@ -1252,12 +1306,12 @@ void ui_show_screen(screen_t screen) {
     case SCREEN_SPLASH:  splash_show(); break;
     case SCREEN_USAGE:
         lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
-        if (wechsel) seite_hereinfahren(usage_container, von_x);
+        if (wechsel) seite_aufblenden(usage_container);
         break;
     case SCREEN_SESSIONS:
         if (sessions_container) {
             lv_obj_clear_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
-            if (wechsel) seite_hereinfahren(sessions_container, von_x);
+            if (wechsel) seite_aufblenden(sessions_container);
         }
         break;
     default: break;
