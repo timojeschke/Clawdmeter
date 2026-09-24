@@ -179,7 +179,7 @@ def test_zombie_link_break_after_limit_consecutive_failures(monkeypatch):
 
     write_call_count = [0]
 
-    async def fake_write_payload(payload):
+    async def fake_write_payload(payload, kleiner=None):
         write_call_count[0] += 1
         return False  # always fail — zombie link
 
@@ -223,7 +223,7 @@ def test_zombie_counter_resets_on_success_with_raised_limit(monkeypatch):
     write_results = iter([False, True, False])
     write_call_count = [0]
 
-    async def fake_write_payload(payload):
+    async def fake_write_payload(payload, kleiner=None):
         write_call_count[0] += 1
         try:
             return next(write_results)
@@ -237,7 +237,7 @@ def test_zombie_counter_resets_on_success_with_raised_limit(monkeypatch):
     write_results2 = [False, True, False, False]
     write_call_count2 = [0]
 
-    async def fake_write_payload2(payload):
+    async def fake_write_payload2(payload, kleiner=None):
         write_call_count2[0] += 1
         if write_call_count2[0] - 1 < len(write_results2):
             return write_results2[write_call_count2[0] - 1]
@@ -285,7 +285,7 @@ def test_zombie_break_disconnect_called_in_finally(monkeypatch):
     stop_event = asyncio.run(_make_event(False))
     mock_client = _make_zombie_client()
 
-    async def fake_write_payload(payload):
+    async def fake_write_payload(payload, kleiner=None):
         return False  # always fail
 
     fake_session = AsyncMock()
@@ -321,7 +321,7 @@ def test_zombie_break_returns_used_successfully_false(monkeypatch):
     stop_event = asyncio.run(_make_event(False))
     mock_client = _make_zombie_client()
 
-    async def fake_write_payload(payload):
+    async def fake_write_payload(payload, kleiner=None):
         return False
 
     fake_session = AsyncMock()

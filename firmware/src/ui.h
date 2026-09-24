@@ -23,6 +23,12 @@ void ui_show_screen(screen_t screen);
 void ui_next_screen(void);
 void ui_prev_screen(void);
 
+// Blaettert selbsttaetig zwischen Usage und Sessions, solange niemand einen
+// Knopf drueckt. Aus der Hauptschleife aufzurufen; der Splash bleibt aussen
+// vor, er ist der Bildschirmschoner und wird bewusst aufgerufen.
+void ui_auto_rotate_tick(void);
+void ui_auto_rotate_set(bool an);
+
 void ui_toggle_splash(void);
 screen_t ui_get_current_screen(void);
 void ui_update_ble_status(ble_state_t state, const char* name, const char* mac);

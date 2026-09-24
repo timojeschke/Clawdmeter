@@ -28,6 +28,7 @@ from bleak.exc import BleakError
 
 try:
     from daemon.sessions_source import (
+        PAYLOAD_LIMIT_GROSS,
         fetch_sessions,
         merge_into_payload,
         read_sessions_config,
@@ -36,6 +37,7 @@ except ImportError:
     # Running the script directly puts its own folder on sys.path, not the
     # repo root — the tray app and the tests import it the other way around.
     from sessions_source import (
+        PAYLOAD_LIMIT_GROSS,
         fetch_sessions,
         merge_into_payload,
         read_sessions_config,
@@ -270,6 +272,24 @@ async def add_session_fields(payload: dict) -> dict:
     async with httpx.AsyncClient() as http:
         state = await fetch_sessions(http, url, token)
     return merge_into_payload(payload, state)
+
+
+async def add_session_fields_paar(payload: dict) -> tuple[dict, dict]:
+    """Zwei Fassungen derselben Nutzlast: grosszuegig und sicher.
+
+    Die grosszuegige nutzt den bestaetigten Schreibvorgang bis an den
+    Firmware-Puffer und zeigt entsprechend mehr Namen. Die sichere bleibt unter
+    der Grenze fuer den Schreibvorgang ohne Bestaetigung. write_payload
+    versucht sie der Reihe nach, sodass der Platz genutzt wird, ohne sich
+    darauf zu verlassen, dass der grosse Weg ueberall funktioniert.
+    """
+    url, token = read_sessions_config(CONFIG_FILE)
+    if not url:
+        return payload, payload
+    async with httpx.AsyncClient() as http:
+        state = await fetch_sessions(http, url, token)
+    return (merge_into_payload(payload, state, PAYLOAD_LIMIT_GROSS),
+            merge_into_payload(payload, state))
 
 
 async def poll_scoped_limit(token: str) -> tuple[str, int] | None:
@@ -554,15 +574,24 @@ class Session:
             return False
         return mtu > 0 and groesse <= mtu - 3
 
-    async def write_payload(self, payload: dict) -> bool:
+    async def write_payload(self, payload: dict, kleiner: dict | None = None) -> bool:
+        """Sende die Nutzlast, notfalls in Stufen.
+
+        Drei Stufen, von grosszuegig nach sicher: die uebergebene Nutzlast,
+        dann eine kleinere mit weniger Sessionnamen, dann gar keine
+        Sessionfelder. So darf der Aufrufer optimistisch viel schicken — der
+        grosse Schreibweg reicht bis an den Firmware-Puffer —, ohne dass ein
+        Fehlschlag die Nutzungszahlen mitreisst. Die sind der Zweck des
+        Geraets, die Namensliste ist das Entbehrliche.
+        """
         if await self._sende(payload):
             return True
 
-        # The session fields are the only part that can push a payload past
-        # the small-write limit, and they are the expendable part: usage
-        # numbers are what the device is for. Rather than let one oversized
-        # payload trip the zombie-link break — which cost seven cycles of
-        # usage data in the field — drop the sessions and deliver the rest.
+        if kleiner is not None and kleiner != payload:
+            log("Write failed — retrying with a shorter session list.")
+            if await self._sende(kleiner):
+                return True
+
         ohne_sessions = {k: v for k, v in payload.items()
                          if k not in ("sw", "sa", "sg", "sn", "sx")}
         if len(ohne_sessions) == len(payload):
@@ -809,8 +838,8 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         if scoped:
                             payload["fn"], payload["fp"] = scoped[0][:10], scoped[1]
                         letzte_nutzlast = dict(payload)
-                        payload = await add_session_fields(payload)
-                        if await session.write_payload(payload):
+                        payload, payload_sicher = await add_session_fields_paar(payload)
+                        if await session.write_payload(payload, payload_sicher):
                             zuletzt_gesendet = dict(payload)
                             last_poll = time.time()
                             last_sessions_push = last_poll
@@ -854,13 +883,14 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
             # payload, so leaving them out would blank the usage screen.
             if (letzte_nutzlast is not None
                     and time.time() - last_sessions_push >= SESSIONS_PUSH_INTERVAL):
-                aktualisiert = await add_session_fields(dict(letzte_nutzlast))
+                aktualisiert, sicher = await add_session_fields_paar(
+                    dict(letzte_nutzlast))
                 # Compare against what was last actually SENT, not against the
                 # usage-only payload: the latter never carries session fields,
                 # so the two always differed and the beat wrote every 10 s
                 # even when nothing had changed (field observation 2026-09-25).
                 if aktualisiert != zuletzt_gesendet:
-                    if await session.write_payload(aktualisiert):
+                    if await session.write_payload(aktualisiert, sicher):
                         zuletzt_gesendet = dict(aktualisiert)
                         last_sessions_push = time.time()
                         consecutive_failures = 0

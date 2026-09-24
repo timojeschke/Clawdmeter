@@ -1,11 +1,15 @@
 #pragma once
 #include <Arduino.h>
 
-// Six names of 24 bytes is what the daemon's 480-byte budget realistically
-// delivers alongside the usage numbers; it also fills the screen without
-// scrolling. The daemon trims to fit — these are the ceiling, not a promise.
-#define SESSIONS_MAX_NAMES 6
-#define SESSIONS_NAME_LEN  24
+// Obergrenzen, keine Zusage: Der Daemon kuerzt selbst auf das, was in eine
+// Funknachricht passt.
+//
+// 24 Byte waren zu wenig — "Heimatschutzverein - Dokumente" hat 30 Zeichen und
+// wurde hier abgeschnitten, nachdem der Daemon ihn extra ungekuerzt geschickt
+// hatte. Ein Umlaut kostet in UTF-8 zwei Byte, deshalb grosszuegig: 48 Byte
+// fassen auch einen 40 Zeichen langen Namen mit Umlauten.
+#define SESSIONS_MAX_NAMES 8
+#define SESSIONS_NAME_LEN  48
 
 struct UsageData {
     float session_pct;       // utilization 0-100 (5h window Pro/Max; spending % Enterprise)

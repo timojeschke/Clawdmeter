@@ -408,6 +408,7 @@ void loop() {
     idle_tick();
     lv_timer_handler();
     ui_tick_anim();
+    ui_auto_rotate_tick();
     ble_tick();
     power_hal_tick();
     imu_hal_tick();

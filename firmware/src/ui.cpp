@@ -55,6 +55,7 @@ struct Layout {
     int16_t batt_y;                  // battery icon top edge
     int16_t batt_w;                  // battery icon width, for position math
     const lv_font_t* sess_count_font; // session counts — serif, like the title
+    const lv_font_t* sess_name_font;    // die Sessionnamen selbst
     const lv_font_t* sess_caption_font; // "Waiting" / "Waiting for input" —
                                         // read from across the desk, so a step
                                         // above the pace line they used to share
@@ -112,6 +113,7 @@ static void compute_layout(const BoardCaps& c) {
     // Tiempos for the counts, not Styrene: the serif is Claude's display face
     // and it ties the three numbers to the "Sessions" title above them.
     L.sess_count_font = &font_tiempos_56;
+    L.sess_name_font = &font_styrene_24;
     L.sess_caption_font = &font_styrene_20;
     L.batt_y = L.title_y + 6;
     // Deliberately larger than the 48 px icon it replaced: at arm's length on
@@ -122,7 +124,7 @@ static void compute_layout(const BoardCaps& c) {
     L.batt_nub_w = 6;
     L.batt_nub_h = 16;
     L.batt_inside = true;
-    L.batt_font = &font_styrene_16;
+    L.batt_font = &font_styrene_20;
     L.batt_lbl_gap = 6;
     L.pair_y1 = 40;
     L.pair_y2 = 120;
@@ -187,6 +189,7 @@ static void compute_layout(const BoardCaps& c) {
         L.title_nudge = 8;
         L.logo_y = 2;
         L.sess_count_font = &font_tiempos_34;
+        L.sess_name_font = &font_styrene_14;
         L.sess_caption_font = &font_styrene_14;
         L.batt_y = 16;   // same centre the 24 px icon had
         // At this size the interior is ~7 px tall — no font is legible in
@@ -239,6 +242,8 @@ static lv_obj_t* sess_more_lbl;         // "+N more" when the list was trimmed
 static int16_t   sess_row_h;            // row pitch, for resizing the card
 static int16_t   sess_first_row_y;      // y of the first name inside the card
 static int16_t   sess_list_max_h;       // card height when it runs to the bottom
+#define SESS_ZEILEN_WUNSCH 4
+static int16_t   sess_max_zeilen;       // wie viele Namen wirklich in die Karte passen
 static lv_obj_t* sess_hint_lbl;         // shown when no session data has arrived
 static lv_obj_t* lbl_title;
 // Clock fed by the daemon: base epoch (local wall-clock seconds) + the lv_tick at
@@ -279,8 +284,8 @@ static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    
 // Solid terracotta, the same accent the usage bars use — the header then reads
 // as part of the same design instead of a grey box borrowed from elsewhere.
 // Durchmesser des Rings neben der Modellquote, und die Dicke seines Bogens.
-#define SCOPED_RING_PX    22
-#define SCOPED_RING_DICKE  3
+#define SCOPED_RING_PX    28
+#define SCOPED_RING_DICKE  4
 
 #define BATT_FILL_OPA LV_OPA_COVER
 
@@ -316,6 +321,7 @@ static const uint32_t DATA_FRESH_MS = 90000;  // usage counts as "live" within t
 // ---- Shared ----
 static lv_image_dsc_t logo_dsc;
 static screen_t current_screen = SCREEN_USAGE;
+static uint32_t letzte_seitenaktion_ms;
 static bool     s_ble_connected = false;   // cached BLE connection state
 static uint32_t connected_at_ms = 0;       // when we last entered CONNECTED ("Connected" dwell)
 
@@ -677,7 +683,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
     // stat block with loose text under it. Only the waiting ones are listed:
     // running and parked sessions ask nothing of anyone.
     const int16_t liste_y = L.content_y + zahlen_h + L.usage_panel_gap;
-    const int16_t zeile_h = L.reset_font->line_height + 4;
+    const int16_t zeile_h = L.sess_name_font->line_height + 4;
 
     sess_list_panel = make_panel(sessions_container, L.margin, liste_y,
                                  L.content_w, zeile_h * 2);
@@ -691,10 +697,14 @@ static void init_sessions_screen(lv_obj_t* scr) {
 
     for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
         sess_name_lbl[i] = lv_label_create(sess_list_panel);
-        lv_obj_set_style_text_font(sess_name_lbl[i], L.reset_font, 0);
+        lv_obj_set_style_text_font(sess_name_lbl[i], L.sess_name_font, 0);
         lv_obj_set_style_text_color(sess_name_lbl[i], COL_TEXT, 0);
         lv_label_set_long_mode(sess_name_lbl[i], LV_LABEL_LONG_DOT);
         lv_obj_set_width(sess_name_lbl[i], L.content_w - 2 * L.panel_pad_x);
+        // Feste Hoehe von genau einer Zeile: Ohne sie waechst das Etikett in
+        // die Hoehe, statt zu kuerzen — lange Namen brachen um und liefen in
+        // die naechste Zeile hinein. Mit fester Hoehe greift LONG_DOT.
+        lv_obj_set_height(sess_name_lbl[i], L.sess_name_font->line_height);
         lv_obj_set_pos(sess_name_lbl[i], 0, erste_zeile + i * zeile_h);
         lv_label_set_text(sess_name_lbl[i], "");
         lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
@@ -711,6 +721,20 @@ static void init_sessions_screen(lv_obj_t* scr) {
     sess_row_h = zeile_h;
     sess_first_row_y = erste_zeile;
     sess_list_max_h = L.scr_h - liste_y - L.margin;
+
+    // Wie viele Namen wirklich in die Karte passen. Ohne diese Rechnung lief
+    // der letzte Name unten heraus und "+N more" lag darueber — die Zahl der
+    // Etiketten (SESSIONS_MAX_NAMES) sagt nichts ueber den Platz auf dem
+    // Schirm. Eine Zeile bleibt fuer "+N more" reserviert.
+    const int16_t nutzbar = sess_list_max_h - erste_zeile
+                          - L.sess_caption_font->line_height - L.panel_pad_y;
+    sess_max_zeilen = nutzbar / zeile_h;
+    if (sess_max_zeilen < 1) sess_max_zeilen = 1;
+    // Timos Wunsch, 2026-09-25: vier Namen. Als eigene Obergrenze gesetzt und
+    // nicht dem Platz ueberlassen — sonst wandert die Zahl mit der naechsten
+    // Schriftaenderung, und niemand weiss mehr, dass vier gewollt waren.
+    if (sess_max_zeilen > SESS_ZEILEN_WUNSCH) sess_max_zeilen = SESS_ZEILEN_WUNSCH;
+    if (sess_max_zeilen > SESSIONS_MAX_NAMES) sess_max_zeilen = SESSIONS_MAX_NAMES;
 
     // Shown instead of three zeros when nothing has arrived: "0 waiting" and
     // "nothing known" look identical otherwise, and mean opposite things.
@@ -751,8 +775,14 @@ static void update_sessions_screen(const UsageData* d) {
     lv_label_set_text_fmt(sess_count_lbl[1], "%d", d->sessions_working);
     lv_label_set_text_fmt(sess_count_lbl[2], "%d", d->sessions_parked);
 
+    // Was nicht auf den Schirm passt, wird gezaehlt statt abgeschnitten —
+    // sonst behauptet die Liste Vollstaendigkeit, die sie nicht hat.
+    const int gezeigt = (d->sessions_name_count < sess_max_zeilen)
+                        ? d->sessions_name_count : sess_max_zeilen;
+    const int zusaetzlich_verborgen = d->sessions_name_count - gezeigt;
+
     for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
-        if (i < d->sessions_name_count) {
+        if (i < gezeigt) {
             lv_label_set_text(sess_name_lbl[i], d->sessions_names[i]);
             lv_obj_clear_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -760,13 +790,14 @@ static void update_sessions_screen(const UsageData* d) {
         }
     }
 
-    int zeilen = d->sessions_name_count;
-    if (d->sessions_hidden > 0) {
+    const int verborgen = d->sessions_hidden + zusaetzlich_verborgen;
+    int zeilen = gezeigt;
+    if (verborgen > 0) {
         // Unten in der Karte, nicht direkt unter der letzten Zeile: Die Karte
         // reicht ohnehin bis zum unteren Rand, und "+N more" ist eine Fussnote
         // zur ganzen Liste, kein weiterer Eintrag. Timo, 2026-09-25: "das +xx
         // more soll ganz unten auf dem screen sein".
-        lv_label_set_text_fmt(sess_more_lbl, "+%d more", d->sessions_hidden);
+        lv_label_set_text_fmt(sess_more_lbl, "+%d more", verborgen);
         lv_obj_align(sess_more_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
         lv_obj_clear_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
         zeilen++;
@@ -1155,16 +1186,44 @@ static void global_click_cb(lv_event_t* e) {
     }
 }
 
+// Einblenden statt harter Umschaltung. Ein Schnitt auf einem Tischdisplay
+// wirkt wie ein Aussetzer; eine kurze Bewegung sagt "eine andere Seite", nicht
+// "etwas ist kaputtgegangen". Kurz gehalten, weil das Geraet im Vorbeigehen
+// gelesen wird und niemand auf eine Animation warten will.
+#define SEITENWECHSEL_MS 220
+
+static void seite_einblenden(lv_obj_t* container) {
+    if (!container) return;
+    lv_obj_set_style_opa(container, LV_OPA_TRANSP, 0);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, container);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_time(&a, SEITENWECHSEL_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a, [](void* obj, int32_t v) {
+        lv_obj_set_style_opa((lv_obj_t*)obj, (lv_opa_t)v, 0);
+    });
+    lv_anim_start(&a);
+}
+
 void ui_show_screen(screen_t screen) {
+    const bool wechsel = (screen != current_screen);
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
     if (sessions_container) lv_obj_add_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
 
     switch (screen) {
     case SCREEN_SPLASH:  splash_show(); break;
-    case SCREEN_USAGE:   lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_USAGE:
+        lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+        if (wechsel) seite_einblenden(usage_container);
+        break;
     case SCREEN_SESSIONS:
-        if (sessions_container) lv_obj_clear_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
+        if (sessions_container) {
+            lv_obj_clear_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
+            if (wechsel) seite_einblenden(sessions_container);
+        }
         break;
     default: break;
     }
@@ -1177,6 +1236,7 @@ void ui_show_screen(screen_t screen) {
 
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
+    letzte_seitenaktion_ms = lv_tick_get();
     apply_battery_visibility();
 }
 
@@ -1195,6 +1255,31 @@ void ui_toggle_splash(void) {
 
 screen_t ui_get_current_screen(void) {
     return current_screen;
+}
+
+// --- Automatischer Seitenwechsel ------------------------------------------
+//
+// Das Geraet steht auf dem Tisch und wird im Vorbeigehen gelesen. Wer sehen
+// will, was gerade wartet, soll nicht erst einen Knopf suchen muessen.
+//
+// Der Clawd-Splash ist absichtlich nicht im Umlauf: Er ist der Bildschirm-
+// schoner und wird bewusst aufgerufen, nicht zugeteilt. Und jeder Knopfdruck
+// setzt die Uhr zurueck — wer selbst blaettert, will nicht nach acht Sekunden
+// weitergeschoben werden.
+#define AUTO_WECHSEL_MS 12000
+
+static bool auto_wechsel_an = true;
+
+void ui_auto_rotate_set(bool an) { auto_wechsel_an = an; }
+
+void ui_auto_rotate_tick(void) {
+    if (!auto_wechsel_an) return;
+    if (current_screen == SCREEN_SPLASH) return;   // Bildschirmschoner bleibt
+    const uint32_t jetzt = lv_tick_get();
+    if (jetzt - letzte_seitenaktion_ms < AUTO_WECHSEL_MS) return;
+    letzte_seitenaktion_ms = jetzt;
+    ui_show_screen(current_screen == SCREEN_USAGE ? SCREEN_SESSIONS
+                                                  : SCREEN_USAGE);
 }
 
 void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) {
@@ -1231,8 +1316,10 @@ void ui_update_battery(int percent, bool charging) {
         } else if (rest >= 0) {
             // Rounded to the coarseness the estimate deserves: a drain slope
             // from a whole-percent reading cannot justify single minutes.
-            if (rest >= 60) lv_label_set_text_fmt(battery_sub_lbl, "~%dh %02dm", rest / 60, rest % 60);
-            else            lv_label_set_text_fmt(battery_sub_lbl, "~%dm", rest);
+            // "ca." statt der Tilde: Das Zeichen liest sich auf einem
+            // Tischdisplay wie ein Strich, das Wort sagt, was gemeint ist.
+            if (rest >= 60) lv_label_set_text_fmt(battery_sub_lbl, "ca. %dh %02dm", rest / 60, rest % 60);
+            else            lv_label_set_text_fmt(battery_sub_lbl, "ca. %dm", rest);
         } else {
             lv_label_set_text(battery_sub_lbl, "");
         }

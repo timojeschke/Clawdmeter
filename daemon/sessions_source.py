@@ -37,6 +37,13 @@ log = logging.getLogger(__name__)
 # the names that do not fit are counted in "sx" rather than dropped silently.
 PAYLOAD_LIMIT_BYTES = 230
 
+# Optimistisches Budget fuer den bestaetigten Schreibvorgang (Long Write), der
+# bis an den 511-Byte-Puffer der Firmware reicht. Der Daemon versucht es zuerst
+# damit und faellt auf PAYLOAD_LIMIT_BYTES zurueck, wenn der Schreibvorgang
+# scheitert — so nutzt die Anzeige den Platz, ohne sich darauf zu verlassen,
+# dass der grosse Weg auf jeder Windows-Version funktioniert.
+PAYLOAD_LIMIT_GROSS = 460
+
 # Long session names ("Stötefalke - Webseite Personal Training") eat the budget
 # without adding information — the first words identify the session. Every
 # umlaut costs six bytes here, not two: the payload is serialised with
@@ -144,6 +151,33 @@ def _kuerzen(name: str, grenze: int) -> str:
     return name[:grenze - 1].rstrip() + ELLIPSE
 
 
+def _mindestlaengen(namen: list[str]) -> list[int]:
+    """Je Name die kuerzeste Laenge, bei der er noch eindeutig ist.
+
+    Eine feste Laenge fuer alle verschenkt Platz: "Privat - IPTV" ist schon
+    nach neun Zeichen unverwechselbar, "Heimatschutzverein - Dokumente" erst
+    nach zweiundzwanzig. Wer beide gleich lang macht, zeigt entweder zu wenige
+    Namen oder zwei gleiche.
+
+    Gemessen wird gegen alle anderen Namen: Gesucht ist die erste Stelle, an
+    der sich dieser Name von jedem anderen unterscheidet.
+    """
+    laengen = []
+    for i, name in enumerate(namen):
+        noetig = 1
+        for j, anderer in enumerate(namen):
+            if i == j:
+                continue
+            # Erste Stelle, an der sich die beiden unterscheiden.
+            stelle = 0
+            while (stelle < len(name) and stelle < len(anderer)
+                   and name[stelle] == anderer[stelle]):
+                stelle += 1
+            noetig = max(noetig, stelle + 1)
+        laengen.append(min(noetig, len(name)))
+    return laengen
+
+
 def _serialised_size(payload: dict) -> int:
     # Must match how write_payload serialises, or the budget measures the wrong
     # string. ensure_ascii=False is the point: "ö" costs two bytes as UTF-8 and
@@ -152,7 +186,8 @@ def _serialised_size(payload: dict) -> int:
                           ensure_ascii=False).encode("utf-8"))
 
 
-def merge_into_payload(payload: dict, daten: dict | None) -> dict:
+def merge_into_payload(payload: dict, daten: dict | None,
+                       budget: int = PAYLOAD_LIMIT_BYTES) -> dict:
     """Add session fields to the usage payload, trimming names to fit.
 
     Returns a new dict; the caller's payload is not modified. With `daten`
@@ -202,17 +237,21 @@ def merge_into_payload(payload: dict, daten: dict | None) -> dict:
     # Dann sagt die Liste nicht mehr, welche Session gemeint ist, und genau
     # dafuer ist sie da. Deshalb zwei getrennte Bestwerte — Dubletten werden
     # nur genommen, wenn es ueberhaupt keine dublettenfreie Loesung gibt.
+    # Jeder Name bekommt mindestens so viel Platz, wie er zur Unterscheidung
+    # braucht — und der Rest des Budgets wird gleichmaessig daraufgelegt.
+    mindest = _mindestlaengen(namen)
+
     bester = None
     bester_eindeutig = None
     for laenge in NAME_LAENGEN:
-        gekuerzt = [_kuerzen(n, laenge) for n in namen]
+        gekuerzt = [_kuerzen(n, max(laenge, m + 1)) for n, m in zip(namen, mindest)]
         passend = list(gekuerzt)
         while passend:
             kandidat = dict(merged)
             kandidat["sn"] = passend
             if len(passend) < len(namen):
                 kandidat["sx"] = len(namen) - len(passend)
-            if _serialised_size(kandidat) <= PAYLOAD_LIMIT_BYTES:
+            if _serialised_size(kandidat) <= budget:
                 if bester is None or len(passend) > len(bester["sn"]):
                     bester = kandidat
                 if len(set(passend)) == len(passend) and (
