@@ -55,6 +55,9 @@ struct Layout {
     int16_t batt_y;                  // battery icon top edge
     int16_t batt_w;                  // battery icon width, for position math
     const lv_font_t* sess_count_font; // session counts — serif, like the title
+    const lv_font_t* sess_caption_font; // "Waiting" / "Waiting for input" —
+                                        // read from across the desk, so a step
+                                        // above the pace line they used to share
     const lv_font_t* batt_font;      // battery percentage
     int16_t batt_lbl_gap;            // gap when the percentage sits beside it
     int16_t batt_h;                  // battery body height
@@ -109,6 +112,7 @@ static void compute_layout(const BoardCaps& c) {
     // Tiempos for the counts, not Styrene: the serif is Claude's display face
     // and it ties the three numbers to the "Sessions" title above them.
     L.sess_count_font = &font_tiempos_56;
+    L.sess_caption_font = &font_styrene_20;
     L.batt_y = L.title_y + 6;
     // Deliberately larger than the 48 px icon it replaced: at arm's length on
     // a desk the number has to be readable at a glance, and the header has the
@@ -183,6 +187,7 @@ static void compute_layout(const BoardCaps& c) {
         L.title_nudge = 8;
         L.logo_y = 2;
         L.sess_count_font = &font_tiempos_34;
+        L.sess_caption_font = &font_styrene_14;
         L.batt_y = 16;   // same centre the 24 px icon had
         // At this size the interior is ~7 px tall — no font is legible in
         // there, so the number stays beside the battery on small screens.
@@ -259,7 +264,8 @@ static lv_obj_t* lbl_session_pct_sym = nullptr;  // "%" in smaller font
 static lv_obj_t* lbl_spending_desc = nullptr;     // "of your monthly budget"
 static lv_obj_t* lbl_spending_status = nullptr;   // "Under pace" / "On pace" / "Over pace"
 static lv_obj_t* lbl_anim;
-static lv_obj_t* lbl_scoped;    // per-model weekly quota, replaces the idle line      // status line: connection state + whimsical idle
+static lv_obj_t* lbl_scoped;
+static lv_obj_t* scoped_punkt;   // kleiner Akzentkreis links der Quote    // per-model weekly quota, replaces the idle line      // status line: connection state + whimsical idle
 
 // ---- Battery indicator (shared, on top) ----
 // ---- Battery indicator: drawn, not an icon ----
@@ -272,6 +278,9 @@ static lv_obj_t* lbl_scoped;    // per-model weekly quota, replaces the idle lin
 #define BATT_LOW_PCT  10   // below this the fill turns red
 // Solid terracotta, the same accent the usage bars use — the header then reads
 // as part of the same design instead of a grey box borrowed from elsewhere.
+// Durchmesser des Akzentpunkts neben der Modellquote.
+#define SCOPED_PUNKT_PX 10
+
 #define BATT_FILL_OPA LV_OPA_COVER
 
 // Room the line under the battery borrows to its left, so it never wraps.
@@ -281,7 +290,13 @@ static lv_obj_t* battery_body;
 static lv_obj_t* battery_fill;
 static lv_obj_t* battery_nub;
 static lv_obj_t* battery_lbl;
-static lv_obj_t* battery_lbl_fett;  // zweite Ebene, 1 px versetzt — siehe Kommentar bei der Erzeugung
+// Faux-Fettung: zwei versetzte Kopien hinter der Zahl. Styrene liegt hier nur
+// als Regular vor (assets/StyreneB-Regular.otf); ein echter Fettschnitt hiesse
+// eine zweite Schriftdatei fuer drei Ziffern. Zwei Versaetze statt einem, weil
+// einer allein gegen die gefuellte Flaeche noch zu duenn wirkte.
+#define BATT_FETT_EBENEN 2
+static lv_obj_t* battery_lbl_fett[BATT_FETT_EBENEN];
+static const lv_point_t BATT_FETT_VERSATZ[BATT_FETT_EBENEN] = { {1, 0}, {0, 1} };
 static lv_obj_t* battery_sub_lbl;   // charge symbol while charging, else time left
 static lv_obj_t* logo_img;
 
@@ -488,12 +503,15 @@ static void battery_create(lv_obj_t* parent) {
     lv_label_set_text(battery_lbl, "");
     if (L.batt_inside) {
         lv_obj_center(battery_lbl);
-        battery_lbl_fett = lv_label_create(battery_body);
-        lv_obj_set_style_text_font(battery_lbl_fett, L.batt_font, 0);
-        lv_obj_set_style_text_color(battery_lbl_fett, THEME_TEXT, 0);
-        lv_label_set_text(battery_lbl_fett, "");
-        lv_obj_align(battery_lbl_fett, LV_ALIGN_CENTER, 1, 0);
-        lv_obj_move_background(battery_lbl_fett);
+        for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
+            battery_lbl_fett[i] = lv_label_create(battery_body);
+            lv_obj_set_style_text_font(battery_lbl_fett[i], L.batt_font, 0);
+            lv_obj_set_style_text_color(battery_lbl_fett[i], THEME_TEXT, 0);
+            lv_label_set_text(battery_lbl_fett[i], "");
+            lv_obj_align(battery_lbl_fett[i], LV_ALIGN_CENTER,
+                         BATT_FETT_VERSATZ[i].x, BATT_FETT_VERSATZ[i].y);
+            lv_obj_move_background(battery_lbl_fett[i]);
+        }
     }
 
     // One line under the battery: the charge symbol while on the cable, an
@@ -609,7 +627,7 @@ static lv_obj_t* make_session_count(lv_obj_t* parent, int16_t x, int16_t w,
     lv_label_set_text(zahl, "-");
 
     lv_obj_t* text = lv_label_create(parent);
-    lv_obj_set_style_text_font(text, L.pace_font, 0);
+    lv_obj_set_style_text_font(text, L.sess_caption_font, 0);
     lv_obj_set_style_text_color(text, COL_DIM, 0);
     lv_obj_set_style_text_align(text, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(text, w);
@@ -663,7 +681,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
                                  L.content_w, zeile_h * 2);
 
     sess_list_caption = lv_label_create(sess_list_panel);
-    lv_obj_set_style_text_font(sess_list_caption, L.pace_font, 0);
+    lv_obj_set_style_text_font(sess_list_caption, L.sess_caption_font, 0);
     lv_obj_set_style_text_color(sess_list_caption, COL_DIM, 0);
     lv_label_set_text(sess_list_caption, "Waiting for input");
     lv_obj_set_pos(sess_list_caption, 0, 0);
@@ -681,7 +699,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
     }
 
     sess_more_lbl = lv_label_create(sess_list_panel);
-    lv_obj_set_style_text_font(sess_more_lbl, L.pace_font, 0);
+    lv_obj_set_style_text_font(sess_more_lbl, L.sess_caption_font, 0);
     lv_obj_set_style_text_color(sess_more_lbl, COL_DIM, 0);
     lv_obj_set_pos(sess_more_lbl, 0, erste_zeile);
     lv_label_set_text(sess_more_lbl, "");
@@ -835,6 +853,16 @@ static void init_usage_screen(lv_obj_t* scr) {
     // to glance at, not something asking for attention.
     lbl_scoped = lv_label_create(usage_container);
     lv_label_set_text(lbl_scoped, "");
+    // Ein kleiner gefuellter Kreis in der Akzentfarbe links der Quote — das
+    // Zeichen U+25CF liegt nicht im Schriftbereich, und ein Objekt laesst sich
+    // ausserdem einfaerben, ohne die Textfarbe der Zeile mitzunehmen.
+    scoped_punkt = lv_obj_create(usage_container);
+    lv_obj_remove_style_all(scoped_punkt);
+    lv_obj_set_size(scoped_punkt, SCOPED_PUNKT_PX, SCOPED_PUNKT_PX);
+    lv_obj_set_style_radius(scoped_punkt, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(scoped_punkt, COL_ACCENT, 0);
+    lv_obj_set_style_bg_opa(scoped_punkt, LV_OPA_COVER, 0);
+    lv_obj_add_flag(scoped_punkt, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_font(lbl_scoped, L.reset_font, 0);
     lv_obj_set_style_text_color(lbl_scoped, COL_DIM, 0);
     lv_obj_align(lbl_scoped, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
@@ -891,9 +919,20 @@ void ui_update(const UsageData* data) {
         if (data->scoped_valid) {
             lv_label_set_text_fmt(lbl_scoped, "%s  %d%%", data->scoped_name, data->scoped_pct);
             lv_obj_clear_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
+            if (scoped_punkt) {
+                // Gleiche Farblogik wie die Balken: der Punkt sagt auf einen
+                // Blick, wie es um die Quote steht, nicht nur dass es sie gibt.
+                lv_obj_set_style_bg_color(scoped_punkt,
+                                          pct_color((float)data->scoped_pct), 0);
+                lv_obj_clear_flag(scoped_punkt, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_update_layout(lbl_scoped);
+                lv_obj_align_to(scoped_punkt, lbl_scoped,
+                                LV_ALIGN_OUT_LEFT_MID, -SCOPED_PUNKT_PX, 0);
+            }
             if (lbl_anim) lv_obj_add_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
+            if (scoped_punkt) lv_obj_add_flag(scoped_punkt, LV_OBJ_FLAG_HIDDEN);
             if (lbl_anim) lv_obj_clear_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
         }
     }
@@ -1068,7 +1107,8 @@ static void apply_battery_visibility(void) {
     // On the splash the whole indicator gets out of the way of the artwork.
     const bool hide = (current_screen == SCREEN_SPLASH);
     lv_obj_t* teile[] = { battery_body, battery_nub, battery_lbl,
-                          battery_lbl_fett, battery_sub_lbl };
+                          battery_lbl_fett[0], battery_lbl_fett[1],
+                          battery_sub_lbl };
     for (lv_obj_t* teil : teile) {
         if (!teil) continue;
         if (hide) lv_obj_add_flag(teil, LV_OBJ_FLAG_HIDDEN);
@@ -1078,7 +1118,9 @@ static void apply_battery_visibility(void) {
     // shows, so the indicator does not vanish without explanation.
     if (battery_lbl && lv_label_get_text(battery_lbl)[0] == '\0') {
         lv_obj_add_flag(battery_lbl, LV_OBJ_FLAG_HIDDEN);
-        if (battery_lbl_fett) lv_obj_add_flag(battery_lbl_fett, LV_OBJ_FLAG_HIDDEN);
+        for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
+            if (battery_lbl_fett[i]) lv_obj_add_flag(battery_lbl_fett[i], LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
 
@@ -1184,14 +1226,18 @@ void ui_update_battery(int percent, bool charging) {
     if (battery_lbl) {
         if (percent < 0) {
             lv_label_set_text(battery_lbl, "");
-            if (battery_lbl_fett) lv_label_set_text(battery_lbl_fett, "");
+            for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
+                if (battery_lbl_fett[i]) lv_label_set_text(battery_lbl_fett[i], "");
+            }
         } else if (L.batt_inside) {
             // No percent sign inside — the battery outline already says what
             // the number means, and the glyph would cost a third of the room.
             lv_label_set_text_fmt(battery_lbl, "%d", percent);
-            if (battery_lbl_fett) {
-                lv_label_set_text(battery_lbl_fett, lv_label_get_text(battery_lbl));
-                lv_obj_align(battery_lbl_fett, LV_ALIGN_CENTER, 1, 0);
+            for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
+                if (!battery_lbl_fett[i]) continue;
+                lv_label_set_text(battery_lbl_fett[i], lv_label_get_text(battery_lbl));
+                lv_obj_align(battery_lbl_fett[i], LV_ALIGN_CENTER,
+                             BATT_FETT_VERSATZ[i].x, BATT_FETT_VERSATZ[i].y);
             }
         } else {
             lv_label_set_text_fmt(battery_lbl, "%d%%", percent);
