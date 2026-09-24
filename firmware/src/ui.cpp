@@ -39,6 +39,8 @@ struct Layout {
     int16_t usage_bar_y;
     int16_t usage_reset_y;
     int16_t bar_h;
+    int16_t ring_d;                  // ring outer diameter
+    int16_t ring_w;                  // ring stroke width
     int16_t panel_pad_x, panel_pad_y;
     int16_t pill_pad_x, pill_pad_y;
     const lv_font_t* title_font;     // screen title / clock
@@ -89,6 +91,8 @@ static void compute_layout(const BoardCaps& c) {
     // Values shared by the two original breakpoints; the small branch below
     // overrides them wholesale.
     L.bar_h = 24;
+    L.ring_d = 180;
+    L.ring_w = 16;
     L.panel_pad_x = 16;
     L.panel_pad_y = 12;
     L.pill_pad_x = 18;
@@ -141,6 +145,8 @@ static void compute_layout(const BoardCaps& c) {
         L.bt_credit_2_font = &font_styrene_20;
     } else if (c.height >= 300) {
         // Compact layout — tuned for 368x448 (AMOLED-1.8).
+        L.ring_d = 150;
+        L.ring_w = 13;
         L.content_y = 85;
         L.usage_panel_h = 130;
         L.usage_panel_gap = 12;
@@ -165,6 +171,8 @@ static void compute_layout(const BoardCaps& c) {
         L.usage_bar_y = 30;
         L.usage_reset_y = 46;
         L.bar_h = 12;
+        L.ring_d = 100;
+        L.ring_w = 8;
         L.panel_pad_x = 10;
         L.panel_pad_y = 6;
         L.pill_pad_x = 8;
@@ -492,30 +500,49 @@ static void battery_create(lv_obj_t* parent) {
 
 // ======== Usage Screen ========
 
-static lv_obj_t* make_usage_panel(lv_obj_t* parent, int y, const char* pill_text,
-                                  lv_obj_t** out_pct, lv_obj_t** out_pill,
-                                  lv_obj_t** out_bar, lv_obj_t** out_reset) {
-    lv_obj_t* panel = make_panel(parent, L.margin, y, L.content_w, L.usage_panel_h);
+// One usage ring: an arc with the percentage inside it, the pill underneath
+// and the reset line below that. Replaces the old horizontal bar — a ring
+// reads as "how full is it" at a glance from across a desk, which a 24 px
+// stripe does not.
+static lv_obj_t* make_usage_ring(lv_obj_t* parent, int x, const char* pill_text,
+                                 lv_obj_t** out_pct, lv_obj_t** out_pill,
+                                 lv_obj_t** out_arc, lv_obj_t** out_reset) {
+    lv_obj_t* arc = lv_arc_create(parent);
+    lv_obj_set_size(arc, L.ring_d, L.ring_d);
+    lv_obj_set_pos(arc, x, L.content_y);
+    lv_arc_set_rotation(arc, 270);          // start at twelve o'clock
+    lv_arc_set_bg_angles(arc, 0, 360);
+    lv_arc_set_range(arc, 0, 100);
+    lv_arc_set_value(arc, 0);
+    lv_obj_remove_style(arc, NULL, LV_PART_KNOB);   // display only, not a control
+    lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(arc, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_set_style_arc_width(arc, L.ring_w, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc, COL_BAR_BG, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, L.ring_w, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(arc, COL_ACCENT, LV_PART_INDICATOR);
+    *out_arc = arc;
 
-    *out_pct = lv_label_create(panel);
-    lv_label_set_text(*out_pct, "---%");
+    *out_pct = lv_label_create(parent);
+    lv_label_set_text(*out_pct, "--%");
     lv_obj_set_style_text_font(*out_pct, L.pct_font, 0);
     lv_obj_set_style_text_color(*out_pct, COL_TEXT, 0);
-    lv_obj_set_pos(*out_pct, 0, 0);
+    lv_obj_align_to(*out_pct, arc, LV_ALIGN_CENTER, 0, 0);
 
-    *out_pill = make_pill(panel, pill_text);
-    lv_obj_align(*out_pill, LV_ALIGN_TOP_RIGHT, 0, 1);
+    *out_pill = make_pill(parent, pill_text);
+    lv_obj_align_to(*out_pill, arc, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
 
-    *out_bar = make_bar(panel, 0, L.usage_bar_y,
-                        L.content_w - 2 * L.panel_pad_x, L.bar_h);
-
-    *out_reset = lv_label_create(panel);
+    *out_reset = lv_label_create(parent);
     lv_label_set_text(*out_reset, "---");
-    lv_obj_set_style_text_font(*out_reset, L.reset_font, 0);
+    // Smaller than on the old bar layout: the column under a ring is half the
+    // screen, and "Resets in 1h 15m" wrapped to two lines at the bar size.
+    lv_obj_set_style_text_font(*out_reset, L.pace_font, 0);
     lv_obj_set_style_text_color(*out_reset, COL_DIM, 0);
-    lv_obj_set_pos(*out_reset, 0, L.usage_reset_y);
+    lv_obj_set_style_text_align(*out_reset, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(*out_reset, L.scr_w / 2 - L.margin);
+    lv_obj_align_to(*out_reset, *out_pill, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
 
-    return panel;
+    return arc;
 }
 
 // Pairing hint — shown when disconnected so the screen isn't empty and the
@@ -765,32 +792,34 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_clear_flag(usage_group, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(usage_group, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    panel_session = make_usage_panel(usage_group, L.content_y, "Current",
+    // Two rings side by side, hard against the margins.
+    const int16_t ring_x2 = L.scr_w - L.margin - L.ring_d;
+    panel_session = make_usage_ring(usage_group, L.margin, "Current",
                      &lbl_session_pct, &lbl_session_label,
                      &bar_session, &lbl_session_reset);
 
     // Enterprise-only overlays inside panel_session — hidden until enterprise data arrives
-    lbl_session_pct_sym = lv_label_create(panel_session);
+    lbl_session_pct_sym = lv_label_create(usage_group);
     lv_label_set_text(lbl_session_pct_sym, "%");
     lv_obj_set_style_text_font(lbl_session_pct_sym, L.reset_font, 0);
     lv_obj_set_style_text_color(lbl_session_pct_sym, COL_TEXT, 0);
     lv_obj_add_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
 
-    lbl_spending_desc = lv_label_create(panel_session);
+    lbl_spending_desc = lv_label_create(usage_group);
     lv_label_set_text(lbl_spending_desc, "of your monthly budget");
     lv_obj_set_style_text_font(lbl_spending_desc, L.reset_font, 0);
     lv_obj_set_style_text_color(lbl_spending_desc, COL_DIM, 0);
-    lv_obj_set_pos(lbl_spending_desc, 0, L.usage_reset_y);
+    // Unter dem linken Ring; Timos Konto ist "pro", dieser Pfad ist ungeprüft.
+    lv_obj_set_pos(lbl_spending_desc, L.margin, L.content_y + L.ring_d + 60);
     lv_obj_add_flag(lbl_spending_desc, LV_OBJ_FLAG_HIDDEN);
 
-    lbl_spending_status = lv_label_create(panel_session);
+    lbl_spending_status = lv_label_create(usage_group);
     lv_label_set_text(lbl_spending_status, "");
     lv_obj_set_style_text_font(lbl_spending_status, L.pace_font, 0);
-    lv_obj_set_pos(lbl_spending_status, 0, L.usage_reset_y + 20);
+    lv_obj_set_pos(lbl_spending_status, L.margin, L.content_y + L.ring_d + 84);
     lv_obj_add_flag(lbl_spending_status, LV_OBJ_FLAG_HIDDEN);
 
-    panel_weekly = make_usage_panel(usage_group,
-                     L.content_y + L.usage_panel_h + L.usage_panel_gap, "Weekly",
+    panel_weekly = make_usage_ring(usage_group, ring_x2, "Weekly",
                      &lbl_weekly_pct, &lbl_weekly_label,
                      &bar_weekly, &lbl_weekly_reset);
     // Recolor enabled so enterprise period box can color pace and reset separately
@@ -910,26 +939,26 @@ void ui_update(const UsageData* data) {
         lv_label_set_text(lbl_session_reset, buf);
     }
 
-    lv_bar_set_value(bar_session, s_pct, LV_ANIM_ON);
-    lv_obj_set_style_bg_color(bar_session, pct_color(data->session_pct), LV_PART_INDICATOR);
+    lv_arc_set_value(bar_session, s_pct);
+    lv_obj_set_style_arc_color(bar_session, pct_color(data->session_pct), LV_PART_INDICATOR);
 
     if (data->enterprise) {
         // Period box: time % + dynamic pace color + "Resets <date>" label
         lv_label_set_text(lbl_weekly_label, "Period");
         lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", data->time_pct);
-        lv_bar_set_value(bar_weekly, data->time_pct, LV_ANIM_ON);
+        lv_arc_set_value(bar_weekly, data->time_pct);
         lv_color_t bar_pace = (data->session_pct <= (float)data->time_pct) ? COL_GREEN :
                               (data->session_pct <= (float)data->time_pct + 15.0f) ? COL_AMBER :
                               COL_RED;
-        lv_obj_set_style_bg_color(bar_weekly, bar_pace, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(bar_weekly, bar_pace, LV_PART_INDICATOR);
         snprintf(buf, sizeof(buf), "#%s %s# - #faf9f5 Resets %s#",
                  pace_hex, pace_text, data->reset_date);
         lv_label_set_text(lbl_weekly_reset, buf);
     } else {
         int w_pct = (int)(data->weekly_pct + 0.5f);
         lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", w_pct);
-        lv_bar_set_value(bar_weekly, w_pct, LV_ANIM_ON);
-        lv_obj_set_style_bg_color(bar_weekly, pct_color(data->weekly_pct), LV_PART_INDICATOR);
+        lv_arc_set_value(bar_weekly, w_pct);
+        lv_obj_set_style_arc_color(bar_weekly, pct_color(data->weekly_pct), LV_PART_INDICATOR);
         format_reset_time(data->weekly_reset_mins, buf, sizeof(buf));
         lv_label_set_text(lbl_weekly_reset, buf);
     }
