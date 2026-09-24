@@ -26,6 +26,21 @@ from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 
+try:
+    from daemon.sessions_source import (
+        fetch_sessions,
+        merge_into_payload,
+        read_sessions_config,
+    )
+except ImportError:
+    # Running the script directly puts its own folder on sys.path, not the
+    # repo root — the tray app and the tests import it the other way around.
+    from sessions_source import (
+        fetch_sessions,
+        merge_into_payload,
+        read_sessions_config,
+    )
+
 DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
@@ -181,6 +196,25 @@ def add_clock_fields(payload: dict) -> None:
     tf = 24 if clock == "24" else 12 if clock == "12" else detect_hour_format()
     payload["t"] = int(time.time()) + time.localtime().tm_gmtoff
     payload["tf"] = tf
+
+
+async def add_session_fields(payload: dict) -> dict:
+    """Merge remote Claude Code session states into the usage payload.
+
+    Opt-in: without `sessions_url` and `sessions_token` in the config this is a
+    no-op and costs nothing. The config is re-read every cycle, same as the
+    chime and clock settings, so enabling it needs no restart.
+
+    A failing sessions server never costs the device its usage numbers —
+    fetch_sessions returns None and merge_into_payload passes the payload
+    through untouched.
+    """
+    url, token = read_sessions_config(CONFIG_FILE)
+    if not url:
+        return payload
+    async with httpx.AsyncClient() as http:
+        state = await fetch_sessions(http, url, token)
+    return merge_into_payload(payload, state)
 
 
 async def poll_api(token: str) -> dict | None:
@@ -643,6 +677,7 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         if tray_state:
                             tray_state.set_error("token expired — run claude login")
                     if payload is not None:
+                        payload = await add_session_fields(payload)
                         if await session.write_payload(payload):
                             last_poll = time.time()
                             used_successfully = True

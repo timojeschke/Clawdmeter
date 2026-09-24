@@ -135,6 +135,51 @@ Press **Ctrl+C** in the terminal. The daemon logs `Daemon stopping` and exits cl
 
 ---
 
+## Optional: show Claude Code session states
+
+The device can also show how many Claude Code sessions on a **remote machine**
+are waiting for your input, alongside the usage numbers. Off by default; it
+costs nothing until you configure it.
+
+The remote side is the `clawdmeter-sessions` service, which reads `tmux` on that
+machine and serves the state as JSON behind a shared secret.
+
+Add two lines to `%LOCALAPPDATA%\Clawdmeter\config`:
+
+```
+sessions_url = https://your-server.example/sessions
+sessions_token = <the token from the server's secret store>
+```
+
+Both are required — a URL without a token counts as off, so the daemon never
+makes an unauthenticated call. The config is re-read every cycle, so no restart
+is needed.
+
+The daemon adds these fields to the payload it writes to the device:
+
+| Field | Meaning |
+|-------|---------|
+| `sw` | sessions waiting for input |
+| `sa` | sessions currently working |
+| `sg` | parked sessions (idle for a long while) |
+| `sn` | names of waiting sessions, as many as fit |
+| `sx` | how many names were dropped for space |
+
+**Why names get dropped:** the firmware's receive buffer is 512 bytes and it
+truncates anything longer. A real server answer with 29 sessions serialises to
+about 3 KB, so the daemon adds names only while they fit and reports the rest
+as a count. Names are also shortened to 22 characters.
+
+**Stale data sends counts without names.** A session that finished four minutes
+ago is no longer waiting, and a stale name would send you to the wrong window.
+The counts stay roughly right, so they are kept.
+
+**A failing sessions server never costs you the usage numbers.** Any error —
+server down, wrong token, malformed answer — is treated the same way: the
+session fields are simply left out of that payload.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
