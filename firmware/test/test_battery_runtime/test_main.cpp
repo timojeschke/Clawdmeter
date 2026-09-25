@@ -25,20 +25,26 @@ int main() {
     // --- Nothing known yet -------------------------------------------------
     battery_runtime_reset();
     battery_runtime_set_rate(0);   // kein gespeicherter Wert aus einem Vorlauf
-    CHECK(battery_runtime_minutes() == -1);
+    CHECK(battery_runtime_minutes() == -1);   // noch kein Ladestand gesehen
 
+    // Ein einzelner Messpunkt ist keine Steigung — aber seit 2026-09-25 wird
+    // daraus mit der Annahme-Rate hochgerechnet, statt nichts zu zeigen.
+    // 108 s je Prozent, 100 % uebrig: 180 min.
     battery_runtime_sample(100, false, 0);
-    CHECK(battery_runtime_minutes() == -1);   // one point is not a slope
+    CHECK(battery_runtime_minutes() == 180);
 
     // --- Too little drop, even after a long time ---------------------------
+    // 1 % ist Rauschen auf einer ganzzahligen Anzeige: keine eigene Messung,
+    // also weiter die Annahme — 99 % mal 108 s sind 178 min.
     battery_runtime_sample(99, false, 30 * MINUTE);
-    CHECK(battery_runtime_minutes() == -1);   // 1 % is noise on a whole-percent reading
+    CHECK(battery_runtime_minutes() == 178);
 
     // --- Enough drop but too short a window --------------------------------
     battery_runtime_reset();
+    battery_runtime_set_rate(0);
     battery_runtime_sample(100, false, 0);
     battery_runtime_sample(90, false, 2 * MINUTE);
-    CHECK(battery_runtime_minutes() == -1);
+    CHECK(battery_runtime_minutes() == 162);   // Annahme: 90 % mal 108 s
 
     // --- A real slope ------------------------------------------------------
     // 10 % in 30 min = 3 min per point; 90 % left => 270 min.
@@ -67,17 +73,21 @@ int main() {
     battery_runtime_set_rate(0);                      // ohne Altwert pruefen
     battery_runtime_sample(50, false, 0);
     battery_runtime_sample(70, false, 10 * MINUTE);   // pack recovered / jitter
-    CHECK(battery_runtime_minutes() == -1);
+    CHECK(battery_runtime_minutes() == 126);   // Annahme: 70 % mal 108 s
     battery_runtime_sample(60, false, 40 * MINUTE);   // 10 % in 30 min, 60 left
     CHECK(battery_runtime_minutes() == 180);
 
     // --- A missing reading is ignored, not treated as empty ----------------
+    // Eine fehlende Messung wird ignoriert, nicht als leer gedeutet — und
+    // ohne jeden Ladestand gibt es auch nichts hochzurechnen.
     battery_runtime_reset();
+    battery_runtime_set_rate(0);
     battery_runtime_sample(-1, false, 0);
     CHECK(battery_runtime_minutes() == -1);
 
     // --- Small jitter inside the tolerance keeps the anchor ----------------
     battery_runtime_reset();
+    battery_runtime_set_rate(0);
     battery_runtime_sample(80, false, 0);
     battery_runtime_sample(81, false, 5 * MINUTE);    // +1 is tolerated
     battery_runtime_sample(70, false, 30 * MINUTE);   // 10 % in 30 min, 70 left

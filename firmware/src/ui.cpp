@@ -326,6 +326,10 @@ static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    
 // einen Verbindungsabbruch ab, ohne veraltete Namen ewig stehen zu lassen.
 #define SESSIONS_STALE_MS (2u * 60u * 1000u)
 
+// Wie lange eine eigene Auswahl geschuetzt ist, bevor bei fehlenden Daten auf
+// die Animation gewechselt wird.
+#define LEERE_WARTEZEIT_MS (10u * 1000u)
+
 #define BATT_FILL_OPA LV_OPA_COVER
 
 static lv_obj_t* battery_body;
@@ -358,7 +362,12 @@ static const uint32_t DATA_FRESH_MS = 90000;  // usage counts as "live" within t
 // ---- Shared ----
 static lv_image_dsc_t logo_dsc;
 static screen_t current_screen = SCREEN_USAGE;
+// Wann zuletzt jemand selbst geblaettert hat. Der Ausweich auf den
+// Clawd-Bildschirm darf eine bewusste Auswahl nicht sofort ueberstimmen.
 static uint32_t letzte_seitenaktion_ms;
+// Merkt, dass der Clawd-Bildschirm NICHT von Hand gewaehlt wurde, sondern
+// weil keine Sessiondaten da waren — nur dann wird auch selbst zurueckgekehrt.
+static bool splash_wegen_leere = false;
 static bool     s_ble_connected = false;   // cached BLE connection state
 static uint32_t connected_at_ms = 0;       // when we last entered CONNECTED ("Connected" dwell)
 
@@ -816,6 +825,29 @@ static void update_sessions_screen(const UsageData* d) {
     const bool sessions_bekannt =
         d->sessions_valid &&
         (lv_tick_get() - (uint32_t)d->sessions_last_ms) < SESSIONS_STALE_MS;
+
+    // Kommen keine Sessiondaten, zeigt das Geraet die Animation statt einer
+    // leeren Karte. Timo, 2026-09-25: "die no data animation auch bei der
+    // Session seite, wenn nichts kommt."
+    //
+    // Warum ein Seitenwechsel und kein eingebettetes Bild: Der Clawd-Bildschirm
+    // zeichnet direkt aufs Panel, weil dieser Chip kein PSRAM hat. Er laesst
+    // sich deshalb nicht in eine Seite einbetten — nur ganz zeigen.
+    //
+    // Eine eigene Auswahl wird dabei respektiert: Wer gerade selbst auf die
+    // Sessionseite geblaettert hat, wird nicht nach einer Sekunde
+    // weggeschoben.
+    const uint32_t seit_aktion = lv_tick_get() - letzte_seitenaktion_ms;
+    if (!sessions_bekannt && current_screen == SCREEN_SESSIONS
+            && seit_aktion > LEERE_WARTEZEIT_MS) {
+        splash_wegen_leere = true;
+        ui_show_screen(SCREEN_SPLASH);
+        return;
+    }
+    if (sessions_bekannt && splash_wegen_leere && current_screen == SCREEN_SPLASH) {
+        splash_wegen_leere = false;
+        ui_show_screen(SCREEN_SESSIONS);
+    }
 
     if (!sessions_bekannt) {
         for (int i = 0; i < 3; i++) lv_label_set_text(sess_count_lbl[i], "-");
@@ -1418,6 +1450,7 @@ void ui_show_screen(screen_t screen) {
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
     letzte_seitenaktion_ms = lv_tick_get();
+    letzte_seitenaktion_ms = lv_tick_get();
     apply_battery_visibility();
 }
 
@@ -1476,12 +1509,6 @@ void ui_update_battery(int percent, bool charging) {
             // ist, und auf einem Tischdisplay zaehlt jedes Zeichen. Timo,
             // 2026-09-25: "lass da ca. weg bei der Schaetzung."
             lv_label_set_text_fmt(battery_sub_lbl, "%d min", rest);
-        } else if (percent >= 0) {
-            // Nicht leer lassen: Eine leere Zeile sieht aus wie ein Fehler,
-            // und Timo hat dreimal gefragt, wo die Restlaufzeit bleibt. Sie
-            // braucht zwei Prozent Abfall ueber drei Minuten, bevor sie etwas
-            // Belastbares sagen kann — bis dahin sagt sie, dass sie misst.
-            lv_label_set_text(battery_sub_lbl, "misst...");
         } else {
             lv_label_set_text(battery_sub_lbl, "");
         }

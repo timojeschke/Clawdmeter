@@ -13,6 +13,17 @@
 // aus der Luft — sie wird sofort verworfen, sobald eine frische vorliegt.
 static uint32_t gespeicherte_rate_ms = 0;
 
+// Startwert fuer den allerersten Akkubetrieb, solange nichts gemessen und
+// nichts gespeichert ist: 108 Sekunden je Prozentpunkt, also rund drei Stunden
+// fuer eine volle Ladung.
+//
+// Das ist eine ANNAHME, keine Messung — die einzige Zahl in diesem Modul, die
+// nicht vom Geraet stammt. Sie steht hier, weil "misst..." laut Timo schlechter
+// ist als eine Zahl, die sich selbst korrigiert: Nach zwei Prozent Abfall,
+// also wenigen Minuten, ersetzt die erste echte Messung sie und wird
+// gespeichert. Danach wird dieser Wert nie wieder benutzt.
+#define ANNAHME_RATE_MS (108u * 1000u)
+
 static bool     laedt      = false;
 static uint32_t anker_ms   = 0;
 static int      anker_pct  = -1;
@@ -86,11 +97,12 @@ void battery_runtime_sample(int percent, bool charging, uint32_t now_ms) {
 int battery_runtime_minutes(void) {
     if (laedt) return -1;                    // am Kabel gibt es keine Restlaufzeit
     if (minuten >= 0) return minuten;        // frisch gemessen schlaegt alles
-    if (gespeicherte_rate_ms == 0) return -1;
-    if (letzte_pct < 0) return -1;
+    if (letzte_pct < 0) return -1;           // noch kein Ladestand gesehen
+    const uint32_t rate = gespeicherte_rate_ms ? gespeicherte_rate_ms
+                                               : ANNAHME_RATE_MS;
     // Aus der gespeicherten Rate hochgerechnet. Dieselbe Arithmetik wie bei
     // der frischen Messung, nur mit der aelteren Steigung.
-    const uint64_t rest_ms = (uint64_t)gespeicherte_rate_ms * (uint64_t)letzte_pct;
+    const uint64_t rest_ms = (uint64_t)rate * (uint64_t)letzte_pct;
     return (int)(rest_ms / 60000u);
 }
 
