@@ -15,6 +15,7 @@ LV_FONT_DECLARE(font_tiempos_34);
 LV_FONT_DECLARE(font_styrene_48);
 LV_FONT_DECLARE(font_styrene_28);
 LV_FONT_DECLARE(font_styrene_24);
+LV_FONT_DECLARE(font_styrene_24_fett);
 LV_FONT_DECLARE(font_styrene_20);
 LV_FONT_DECLARE(font_styrene_16);
 LV_FONT_DECLARE(font_styrene_14);
@@ -50,7 +51,12 @@ struct Layout {
     const lv_font_t* anim_font;      // animated status line
     int16_t anim_y;                  // status line offset from bottom
     bool    small_icons;             // 40px logo + 24px battery (vs 80/48) on small screens
-    int16_t title_nudge;             // title x-shift balancing the corner logo
+    int16_t title_nudge;             // Verschiebung der Ueberschrift, damit sie
+                                     // zwischen Logo und Batterie mittig sitzt
+                                     // statt mittig im Bildschirm — links steht
+                                     // das Logo, rechts die Batterie, und beide
+                                     // sind verschieden breit. Berechnet in
+                                     // compute_layout(), nicht geraten.
     int16_t logo_y;                  // logo top edge
     int16_t batt_y;                  // battery icon top edge
     int16_t batt_w;                  // battery icon width, for position math
@@ -84,6 +90,19 @@ static Layout L = {};
 // existing boards happen to land on the two breakpoints below; new ports
 // inherit the closer one — visually OK, may need a polish pass for
 // pixel-perfect alignment but never blocks the port from booting.
+// Abstand zwischen Batteriekoerper und Kontaktstueck.
+#define BATT_NUB_GAP   1
+
+// Mitte des freien Felds zwischen Logo und Batterie, als Abweichung von der
+// Bildschirmmitte. Setzt voraus, dass L.margin, L.scr_w, L.batt_w und
+// L.batt_nub_w bereits gesetzt sind.
+static int16_t titel_versatz(int16_t logo_w) {
+    const int16_t logo_rechts = L.margin + logo_w;
+    const int16_t batt_links  = L.scr_w - L.margin
+                              - (L.batt_w + BATT_NUB_GAP + L.batt_nub_w);
+    return (int16_t)(((logo_rechts + batt_links) / 2) - (L.scr_w / 2));
+}
+
 static void compute_layout(const BoardCaps& c) {
     L.scr_w = c.width;
     L.scr_h = c.height;
@@ -106,7 +125,6 @@ static void compute_layout(const BoardCaps& c) {
     L.anim_font    = &font_mono_32;
     L.anim_y = -15;
     L.small_icons = false;
-    L.title_nudge = 16;
     L.logo_y = L.title_y - 10;
     // Centred where the 48 px icon's centre used to be, so the header keeps
     // its balance against the logo on the left.
@@ -119,12 +137,12 @@ static void compute_layout(const BoardCaps& c) {
     // Deliberately larger than the 48 px icon it replaced: at arm's length on
     // a desk the number has to be readable at a glance, and the header has the
     // room. Only one weight of Styrene ships, so "heavier" means a larger size.
-    L.batt_w = 58;
-    L.batt_h = 30;
+    L.batt_w = 66;
+    L.batt_h = 34;
     L.batt_nub_w = 6;
     L.batt_nub_h = 16;
     L.batt_inside = true;
-    L.batt_font = &font_styrene_20;
+    L.batt_font = &font_styrene_24_fett;
     L.batt_lbl_gap = 6;
     L.pair_y1 = 40;
     L.pair_y2 = 120;
@@ -186,7 +204,6 @@ static void compute_layout(const BoardCaps& c) {
         // against the bottom edge it reads as unevenly spaced.
         L.anim_y = -10;
         L.small_icons = true;
-        L.title_nudge = 8;
         L.logo_y = 2;
         L.sess_count_font = &font_tiempos_34;
         L.sess_name_font = &font_styrene_14;
@@ -215,6 +232,18 @@ static void compute_layout(const BoardCaps& c) {
     }
 
     L.content_w = L.scr_w - 2 * L.margin;
+    // ZULETZT: Die Ueberschrift soll mittig zwischen Logo und Batterie stehen,
+    // nicht mittig im Bildschirm — links das Logo, rechts die Batterie, beide
+    // verschieden breit. Die Rechnung braucht L.margin, L.batt_w und
+    // L.batt_nub_w, und die stehen erst hier fest.
+    //
+    // Genau daran ist die erste Fassung gescheitert: Sie rechnete oben im
+    // Block, als L.batt_w noch 0 war, und schob den Titel dadurch 35 Pixel zu
+    // weit nach rechts. Eine Funktion mit Voraussetzungen gehoert dorthin, wo
+    // die Voraussetzungen erfuellt sind.
+    L.title_nudge = titel_versatz(L.small_icons ? CLAWD_STILL_SMALL_W
+                                                : CLAWD_STILL_W);
+
 }
 
 // Anthropic brand palette — design tokens live in theme.h
@@ -246,6 +275,7 @@ static int16_t   sess_list_max_h;       // card height when it runs to the botto
 static int16_t   sess_max_zeilen;       // wie viele Namen wirklich in die Karte passen
 static lv_obj_t* sess_hint_lbl;         // shown when no session data has arrived
 static lv_obj_t* lbl_title;
+static lv_obj_t* sess_title_lbl;   // Ueberschrift der Sessions-Seite
 // Clock fed by the daemon: base epoch (local wall-clock seconds) + the lv_tick at
 // which it landed, so the title ticks forward locally between 60s payloads.
 static long     clock_base_epoch = 0;
@@ -279,7 +309,6 @@ static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    
 // the interior for the percentage — the way phones show it — and lets the fill
 // take its colour from theme.h instead of being baked into an image.
 #define BATT_BORDER_W  2
-#define BATT_NUB_GAP   1
 #define BATT_LOW_PCT  10   // below this the fill turns red
 // Solid terracotta, the same accent the usage bars use — the header then reads
 // as part of the same design instead of a grey box borrowed from elsewhere.
@@ -289,9 +318,6 @@ static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    
 #define SCOPED_RING_DICKE  5
 
 #define BATT_FILL_OPA LV_OPA_COVER
-
-// Room the line under the battery borrows to its left, so it never wraps.
-#define BATT_SUB_EXTRA_W 70
 
 static lv_obj_t* battery_body;
 static lv_obj_t* battery_fill;
@@ -306,13 +332,6 @@ static lv_obj_t* battery_lbl;
 // Mal ringsum versetzt gezeichnet — eine Umrandung von einem Pixel in jede
 // Richtung. Das verdickt den Strich symmetrisch; ein Versatz nur nach unten
 // rechts, wie vorher, sieht aus wie ein Schatten und nicht wie Fettdruck.
-#define BATT_FETT_EBENEN 8
-static lv_obj_t* battery_lbl_fett[BATT_FETT_EBENEN];
-static const lv_point_t BATT_FETT_VERSATZ[BATT_FETT_EBENEN] = {
-    {-1, -1}, { 0, -1}, { 1, -1},
-    {-1,  0},           { 1,  0},
-    {-1,  1}, { 0,  1}, { 1,  1},
-};
 static lv_obj_t* battery_sub_lbl;   // charge symbol while charging, else time left
 static lv_obj_t* logo_img;
 
@@ -520,15 +539,6 @@ static void battery_create(lv_obj_t* parent) {
     lv_label_set_text(battery_lbl, "");
     if (L.batt_inside) {
         lv_obj_center(battery_lbl);
-        for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
-            battery_lbl_fett[i] = lv_label_create(battery_body);
-            lv_obj_set_style_text_font(battery_lbl_fett[i], L.batt_font, 0);
-            lv_obj_set_style_text_color(battery_lbl_fett[i], THEME_TEXT, 0);
-            lv_label_set_text(battery_lbl_fett[i], "");
-            lv_obj_align(battery_lbl_fett[i], LV_ALIGN_CENTER,
-                         BATT_FETT_VERSATZ[i].x, BATT_FETT_VERSATZ[i].y);
-            lv_obj_move_background(battery_lbl_fett[i]);
-        }
     }
 
     // One line under the battery: the charge symbol while on the cable, an
@@ -542,10 +552,23 @@ static void battery_create(lv_obj_t* parent) {
     // sie nach links verrutscht aus, weil das Etikett breiter ist als der
     // Koerper — breiter muss es sein, sonst bricht "ca. 200 min" um.
     lv_obj_set_style_text_align(battery_sub_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(battery_sub_lbl, total_w + 2 * BATT_SUB_EXTRA_W);
-    lv_obj_set_pos(battery_sub_lbl,
-                   body_x + total_w / 2 - (total_w + 2 * BATT_SUB_EXTRA_W) / 2,
-                   L.batt_y + L.batt_h + 3);
+    // Senkrecht in die Mitte zwischen Batterieunterkante und Oberkante des
+    // ersten Blocks. Timo, 2026-09-25: "genau mittig von der Hoehe zwischen
+    // der Batterie und dem naechsten Block." Ein fester Abstand von drei
+    // Pixeln klebte die Zeile an die Batterie und liess darunter ein Loch.
+    const int16_t batt_unten = L.batt_y + L.batt_h;
+    const int16_t luecke     = L.content_y - batt_unten;
+    const int16_t sub_h      = lv_font_get_line_height(&lv_font_montserrat_14);
+    // Die Breite ergibt sich aus dem Platz rechts der Mitte: Ein mittiges
+    // Etikett kann hoechstens doppelt so breit sein wie der Abstand seiner
+    // Mitte zum Bildrand — sonst laeuft es hinaus und wird abgeschnitten.
+    // Gemessen (480x480): Mitte bei 423, also 114 Pixel; "ca. 200 min" und
+    // die Ladezeile passen darin.
+    const int16_t mitte_x = body_x + total_w / 2;
+    const int16_t sub_w   = 2 * (L.scr_w - mitte_x);
+    lv_obj_set_width(battery_sub_lbl, sub_w);
+    lv_obj_set_pos(battery_sub_lbl, mitte_x - sub_w / 2,
+                   batt_unten + (luecke - sub_h) / 2);
     lv_label_set_long_mode(battery_sub_lbl, LV_LABEL_LONG_CLIP);
     lv_label_set_text(battery_sub_lbl, "");
 }
@@ -667,6 +690,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
     lv_obj_add_event_cb(sessions_container, global_click_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t* titel = lv_label_create(sessions_container);
+    sess_title_lbl = titel;
     lv_label_set_text(titel, "Sessions");
     lv_obj_set_style_text_font(titel, L.title_font, 0);
     lv_obj_set_style_text_color(titel, COL_TEXT, 0);
@@ -715,7 +739,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
     // dicht beieinander, statt den Platz gleichmaessig zu fuellen — was
     // uebrig bleibt, wird zur Luft vor der Fussnote. Die sitzt ohnehin am
     // unteren Rand der Karte.
-    const int16_t zeile_h = L.sess_name_font->line_height + 4;
+    const int16_t zeile_h = L.sess_name_font->line_height + 1;
 
     sess_list_panel = make_panel(sessions_container, L.margin, liste_y,
                                  L.content_w, zeile_h * 2);
@@ -1110,33 +1134,44 @@ static void update_view_state(void) {
                       LV_OBJ_FLAG_HIDDEN);
 }
 
+// Setzt beide Ueberschriften. Timo, 2026-09-25: "anstatt die ueberschriften
+// bitte einfach die Uhrzeit." Beide, nicht nur die der Usage-Seite — sonst
+// stuende auf der einen Seite die Zeit und auf der anderen ein Wort.
+static void titel_setzen(const char* text) {
+    if (lbl_title)      lv_label_set_text(lbl_title, text);
+    if (sess_title_lbl) lv_label_set_text(sess_title_lbl, text);
+}
+
+// Die Uhr laeuft zwischen zwei Nutzlasten lokal weiter, damit die Minute
+// umspringt, ohne auf den Daemon zu warten.
+static void uhr_tick(void) {
+    if (clock_base_epoch <= 0) return;
+    const uint32_t now = lv_tick_get();
+    time_t cur = (time_t)(clock_base_epoch + (now - clock_base_ms) / 1000);
+    struct tm tmv;
+    gmtime_r(&cur, &tmv);   // epoch ist bereits Ortszeit
+    if (tmv.tm_min == clock_last_min) return;
+    clock_last_min = tmv.tm_min;
+    char tbuf[12];
+    if (clock_fmt == 12) {
+        int h12 = tmv.tm_hour % 12;
+        if (h12 == 0) h12 = 12;
+        snprintf(tbuf, sizeof(tbuf), "%d:%02d %s", h12, tmv.tm_min,
+                 tmv.tm_hour < 12 ? "AM" : "PM");
+    } else {
+        snprintf(tbuf, sizeof(tbuf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+    }
+    titel_setzen(tbuf);
+}
+
 void ui_tick_anim(void) {
+    uhr_tick();
     if (current_screen != SCREEN_USAGE) return;
     update_view_state();
     if (view_state == 1) splash_mini_tick();   // animate the sleeping creature on the idle screen
 
     uint32_t now = lv_tick_get();
 
-    // Title clock: once the daemon has sent wall-clock time, replace "Usage" with
-    // the live time, advanced locally so it ticks every minute between payloads.
-    if (clock_base_epoch > 0) {
-        time_t cur = (time_t)(clock_base_epoch + (now - clock_base_ms) / 1000);
-        struct tm tmv;
-        gmtime_r(&cur, &tmv);   // epoch is already local wall-clock → gmtime keeps it as-is
-        if (tmv.tm_min != clock_last_min) {   // only rewrite the title when the minute changes
-            clock_last_min = tmv.tm_min;
-            char tbuf[12];
-            if (clock_fmt == 12) {
-                int h12 = tmv.tm_hour % 12;
-                if (h12 == 0) h12 = 12;
-                snprintf(tbuf, sizeof(tbuf), "%d:%02d %s", h12, tmv.tm_min,
-                         tmv.tm_hour < 12 ? "AM" : "PM");
-            } else {
-                snprintf(tbuf, sizeof(tbuf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
-            }
-            lv_label_set_text(lbl_title, tbuf);
-        }
-    }
 
     if (now - anim_msg_start >= ANIM_MSG_MS) {
         anim_msg_idx = (anim_msg_idx + 1) % ANIM_MSG_COUNT;
@@ -1173,12 +1208,8 @@ static void apply_battery_visibility(void) {
     if (!battery_body) return;
     // On the splash the whole indicator gets out of the way of the artwork.
     const bool hide = (current_screen == SCREEN_SPLASH);
-    lv_obj_t* teile[4 + BATT_FETT_EBENEN] = {
-        battery_body, battery_nub, battery_lbl, battery_sub_lbl
-    };
-    for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
-        teile[4 + i] = battery_lbl_fett[i];
-    }
+    lv_obj_t* teile[] = { battery_body, battery_nub, battery_lbl,
+                          battery_sub_lbl };
     for (lv_obj_t* teil : teile) {
         if (!teil) continue;
         if (hide) lv_obj_add_flag(teil, LV_OBJ_FLAG_HIDDEN);
@@ -1188,9 +1219,6 @@ static void apply_battery_visibility(void) {
     // shows, so the indicator does not vanish without explanation.
     if (battery_lbl && lv_label_get_text(battery_lbl)[0] == '\0') {
         lv_obj_add_flag(battery_lbl, LV_OBJ_FLAG_HIDDEN);
-        for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
-            if (battery_lbl_fett[i]) lv_obj_add_flag(battery_lbl_fett[i], LV_OBJ_FLAG_HIDDEN);
-        }
     }
 }
 
@@ -1360,7 +1388,7 @@ screen_t ui_get_current_screen(void) {
 // weitergeschoben werden.
 #define AUTO_WECHSEL_MS 12000
 
-static bool auto_wechsel_an = true;
+static bool auto_wechsel_an = false;
 
 void ui_auto_rotate_set(bool an) { auto_wechsel_an = an; }
 
@@ -1409,11 +1437,11 @@ void ui_update_battery(int percent, bool charging) {
         } else if (rest >= 0) {
             // Rounded to the coarseness the estimate deserves: a drain slope
             // from a whole-percent reading cannot justify single minutes.
-            // Minuten, auch ueber einer Stunde: Timo will eine Zahl, die er
-            // ohne Umrechnen mit der Zeit vergleichen kann, die er noch am
-            // Schreibtisch sitzt. "ca." statt einer Tilde, weil die Tilde auf
-            // einem Tischdisplay wie ein Strich aussieht.
-            lv_label_set_text_fmt(battery_sub_lbl, "ca. %d min", rest);
+            // Nur die Zahl und die Einheit. Das "ca." stand vorher davor,
+            // aber es ist dort ohnehin klar, dass eine Restlaufzeit geschaetzt
+            // ist, und auf einem Tischdisplay zaehlt jedes Zeichen. Timo,
+            // 2026-09-25: "lass da ca. weg bei der Schaetzung."
+            lv_label_set_text_fmt(battery_sub_lbl, "%d min", rest);
         } else {
             lv_label_set_text(battery_sub_lbl, "");
         }
@@ -1422,19 +1450,10 @@ void ui_update_battery(int percent, bool charging) {
     if (battery_lbl) {
         if (percent < 0) {
             lv_label_set_text(battery_lbl, "");
-            for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
-                if (battery_lbl_fett[i]) lv_label_set_text(battery_lbl_fett[i], "");
-            }
         } else if (L.batt_inside) {
             // No percent sign inside — the battery outline already says what
             // the number means, and the glyph would cost a third of the room.
             lv_label_set_text_fmt(battery_lbl, "%d", percent);
-            for (int i = 0; i < BATT_FETT_EBENEN; ++i) {
-                if (!battery_lbl_fett[i]) continue;
-                lv_label_set_text(battery_lbl_fett[i], lv_label_get_text(battery_lbl));
-                lv_obj_align(battery_lbl_fett[i], LV_ALIGN_CENTER,
-                             BATT_FETT_VERSATZ[i].x, BATT_FETT_VERSATZ[i].y);
-            }
         } else {
             lv_label_set_text_fmt(battery_lbl, "%d%%", percent);
             // Re-align on every update: the label width changes with the
