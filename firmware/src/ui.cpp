@@ -538,7 +538,12 @@ static void battery_create(lv_obj_t* parent) {
     lv_obj_set_style_text_color(battery_lbl, L.batt_inside ? THEME_TEXT : THEME_DIM, 0);
     lv_label_set_text(battery_lbl, "");
     if (L.batt_inside) {
-        lv_obj_center(battery_lbl);
+        // Nicht lv_obj_center(): Das zentriert den Textkasten, nicht die
+        // Ziffern. Von den 31 px Zeilenhoehe sind 6 px fuer Unterlaengen
+        // reserviert (base_line), und Ziffern haben keine — die Tinte sitzt
+        // also im oberen Teil des Kastens und wirkt zu hoch. Um die halbe
+        // Unterlaenge nach unten versetzt steht sie mittig.
+        lv_obj_align(battery_lbl, LV_ALIGN_CENTER, 0, L.batt_font->base_line / 2);
     }
 
     // One line under the battery: the charge symbol while on the cable, an
@@ -1459,6 +1464,12 @@ void ui_update_battery(int percent, bool charging) {
             // ist, und auf einem Tischdisplay zaehlt jedes Zeichen. Timo,
             // 2026-09-25: "lass da ca. weg bei der Schaetzung."
             lv_label_set_text_fmt(battery_sub_lbl, "%d min", rest);
+        } else if (percent >= 0) {
+            // Nicht leer lassen: Eine leere Zeile sieht aus wie ein Fehler,
+            // und Timo hat dreimal gefragt, wo die Restlaufzeit bleibt. Sie
+            // braucht zwei Prozent Abfall ueber drei Minuten, bevor sie etwas
+            // Belastbares sagen kann — bis dahin sagt sie, dass sie misst.
+            lv_label_set_text(battery_sub_lbl, "misst...");
         } else {
             lv_label_set_text(battery_sub_lbl, "");
         }
