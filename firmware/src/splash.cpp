@@ -313,7 +313,7 @@ static void blit_cells(const uint8_t* cells, const uint16_t* palette,
 // zeilenweise; ein gesetztes Bit ist ein Punkt.
 #define UHR_ZEICHEN_B 3
 #define UHR_ZEICHEN_H 5
-#define UHR_PUNKT     5     // Bildpunkte je Rasterpunkt
+#define UHR_PUNKT     6     // Bildpunkte je Rasterpunkt
 #define UHR_ABSTAND   1     // Rasterpunkte zwischen zwei Zeichen
 // Abstand zur oberen und rechten Bildkante. 28 statt 10, weil das Panel
 // abgerundete Ecken hat: Bei 10 Pixeln lag die letzte Ziffer in der Rundung
@@ -428,7 +428,7 @@ static void render_frame(const uint8_t *cells, const uint16_t *palette) {
 // zeilenweise; ein gesetztes Bit ist ein Punkt.
 #define UHR_ZEICHEN_B 3
 #define UHR_ZEICHEN_H 5
-#define UHR_PUNKT     5     // Bildpunkte je Rasterpunkt
+#define UHR_PUNKT     6     // Bildpunkte je Rasterpunkt
 #define UHR_ABSTAND   1     // Rasterpunkte zwischen zwei Zeichen
 // Abstand zur oberen und rechten Bildkante. 28 statt 10, weil das Panel
 // abgerundete Ecken hat: Bei 10 Pixeln lag die letzte Ziffer in der Rundung
