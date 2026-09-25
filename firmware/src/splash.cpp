@@ -313,9 +313,13 @@ static void blit_cells(const uint8_t* cells, const uint16_t* palette,
 // zeilenweise; ein gesetztes Bit ist ein Punkt.
 #define UHR_ZEICHEN_B 3
 #define UHR_ZEICHEN_H 5
-#define UHR_PUNKT     3     // Bildpunkte je Rasterpunkt
+#define UHR_PUNKT     5     // Bildpunkte je Rasterpunkt
 #define UHR_ABSTAND   1     // Rasterpunkte zwischen zwei Zeichen
-#define UHR_RAND      10    // Abstand zur oberen und rechten Bildkante
+// Abstand zur oberen und rechten Bildkante. 28 statt 10, weil das Panel
+// abgerundete Ecken hat: Bei 10 Pixeln lag die letzte Ziffer in der Rundung
+// und wurde abgeschnitten. Der Rest der Oberflaeche haelt aus demselben Grund
+// 20 Pixel Abstand; oben rechts trifft die Rundung doppelt zu.
+#define UHR_RAND      28
 
 static const uint16_t UHR_GLYPHEN[11] = {
     0x7B6F, 0x749A, 0x73E7, 0x79E7, 0x49ED, 0x79CF, 0x7BCF, 0x4927, 0x7BEF, 0x79EF,
@@ -424,9 +428,13 @@ static void render_frame(const uint8_t *cells, const uint16_t *palette) {
 // zeilenweise; ein gesetztes Bit ist ein Punkt.
 #define UHR_ZEICHEN_B 3
 #define UHR_ZEICHEN_H 5
-#define UHR_PUNKT     3     // Bildpunkte je Rasterpunkt
+#define UHR_PUNKT     5     // Bildpunkte je Rasterpunkt
 #define UHR_ABSTAND   1     // Rasterpunkte zwischen zwei Zeichen
-#define UHR_RAND      10    // Abstand zur oberen und rechten Bildkante
+// Abstand zur oberen und rechten Bildkante. 28 statt 10, weil das Panel
+// abgerundete Ecken hat: Bei 10 Pixeln lag die letzte Ziffer in der Rundung
+// und wurde abgeschnitten. Der Rest der Oberflaeche haelt aus demselben Grund
+// 20 Pixel Abstand; oben rechts trifft die Rundung doppelt zu.
+#define UHR_RAND      28
 
 static const uint16_t UHR_GLYPHEN[11] = {
     0x7B6F, 0x749A, 0x73E7, 0x79E7, 0x49ED, 0x79CF, 0x7BCF, 0x4927, 0x7BEF, 0x79EF,
