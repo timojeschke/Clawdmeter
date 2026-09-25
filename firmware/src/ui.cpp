@@ -1253,7 +1253,24 @@ static void global_click_cb(lv_event_t* e) {
 // stockende Bewegung.
 #define SEITENWECHSEL_MS 200
 
-static bool seitenanimation_an = true;
+// AUS, und zwar gemessen statt vermutet.
+//
+// Auf dem Geraet (C6, 480x480, kein PSRAM) am 2026-09-25 ueber drei Wechsel:
+//   224 ms, 2 Bilder, groesste Luecke 134 ms
+//   244 ms, 2 Bilder, groesste Luecke 125 ms
+//   261 ms, 2 Bilder, groesste Luecke 132 ms
+// Zum Vergleich der Simulator auf dem Rechner: 33 Bilder in 200 ms, groesste
+// Luecke 10 ms.
+//
+// Zwei Bilder sind keine Animation. Ein vollflaechiges Neuzeichnen kostet hier
+// gut 120 ms, und das Aufblenden macht den Wechsel damit nur um diese Zeit
+// langsamer, ohne dass etwas fliesst. Der harte Wechsel ist schneller UND
+// sieht besser aus.
+//
+// Die Mechanik bleibt stehen, weil sie auf einem Board mit PSRAM und
+// schnellerem Panel tragen koennte — aber sie wird eingeschaltet, wenn sie
+// dort gemessen wurde, nicht vorher.
+static bool seitenanimation_an = false;
 
 void ui_set_seitenanimation(bool an) { seitenanimation_an = an; }
 
