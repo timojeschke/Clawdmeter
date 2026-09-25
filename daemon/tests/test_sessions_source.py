@@ -23,19 +23,25 @@ from daemon.sessions_source import (
 BASIS = {"s": 42, "sr": 180, "w": 17, "wr": 8820, "st": "active", "ok": True}
 
 
-def _stand(wartend, arbeitend=1, geparkt=20, frisch=True, alter=4):
+def _stand(namen, wartend=1, geparkt=20, frisch=True, alter=4):
+    """Ein Serverstand, in dem `namen` die LAUFENDEN Sessions sind.
+
+    Seit dem 2026-09-25 zeigt das Geraet die laufenden statt der wartenden —
+    "wartet auf Eingabe" ist bei Claude Code kein trennscharfer Zustand, weil
+    die App jede untaetige Session so nennt.
+    """
     return {
         "erzeugt_um": 1790000000,
         "alter_sekunden": alter,
         "frisch": frisch,
         "anzahl": {
-            "wartet": len(wartend),
-            "arbeitet": arbeitend,
+            "wartet": wartend,
+            "arbeitet": len(namen),
             "geparkt": geparkt,
-            "gesamt": len(wartend) + arbeitend + geparkt,
+            "gesamt": len(namen) + wartend + geparkt,
         },
-        "sessions": [{"name": n, "zustand": "wartet"} for n in wartend]
-        + [{"name": "laeuft gerade", "zustand": "arbeitet"}],
+        "sessions": [{"name": n, "zustand": "arbeitet"} for n in namen]
+        + [{"name": "wartet gerade", "zustand": "wartet"}],
     }
 
 
@@ -124,7 +130,7 @@ def test_die_uebergebene_nutzlast_wird_nicht_veraendert():
 
 def test_zahlen_kommen_mit():
     r = merge_into_payload(BASIS, _stand(["A", "B"]))
-    assert (r["sw"], r["sa"], r["sg"]) == (2, 1, 20)
+    assert (r["sw"], r["sa"], r["sg"]) == (1, 2, 20)
 
 
 def test_kurze_liste_kommt_vollstaendig_durch():
@@ -152,7 +158,7 @@ def test_viele_sessions_sprengen_die_grenze_nicht():
     viele = [f"Projekt Nummer {i} mit langem Namen" for i in range(29)]
     r = merge_into_payload(BASIS, _stand(viele))
     assert _groesse(r) <= PAYLOAD_LIMIT_BYTES
-    assert r["sw"] == 29
+    assert r["sa"] == 29
     assert r["sx"] == 29 - len(r.get("sn", []))
 
 
@@ -168,13 +174,13 @@ def test_veralteter_stand_liefert_zahlen_ohne_namen():
     # Fenster. Die Zahl bleibt naeherungsweise richtig, der Name nicht.
     r = merge_into_payload(BASIS, _stand(["A", "B"], frisch=False, alter=600))
     assert "sn" not in r
-    assert r["sw"] == 2 and r["sx"] == 2
+    assert r["sa"] == 2 and r["sx"] == 2
 
 
-def test_ohne_wartende_keine_namensliste():
+def test_ohne_laufende_keine_namensliste():
     r = merge_into_payload(BASIS, _stand([]))
     assert "sn" not in r
-    assert r["sw"] == 0
+    assert r["sa"] == 0
 
 
 def test_die_auslastungsfelder_ueberleben_das_zusammenfuehren():
@@ -364,7 +370,7 @@ def test_dubletten_werden_auch_bei_vielen_sessions_vermieden():
                                           "Privat - IPTV"]))
     assert len(set(r["sn"])) == len(r["sn"])
     # Was nicht gezeigt wird, wird gezaehlt — die Summe muss stimmen.
-    assert len(r["sn"]) + r.get("sx", 0) == r["sw"]
+    assert len(r["sn"]) + r.get("sx", 0) == r["sa"]
 
 
 def test_namen_bekommen_den_platz_der_uebrig_ist():

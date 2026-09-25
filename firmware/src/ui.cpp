@@ -774,7 +774,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
     sess_list_caption = lv_label_create(sess_list_panel);
     lv_obj_set_style_text_font(sess_list_caption, L.sess_caption_font, 0);
     lv_obj_set_style_text_color(sess_list_caption, COL_DIM, 0);
-    lv_label_set_text(sess_list_caption, "Waiting for input");
+    lv_label_set_text(sess_list_caption, "Running now");
     lv_obj_set_pos(sess_list_caption, 0, 0);
 
     for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {

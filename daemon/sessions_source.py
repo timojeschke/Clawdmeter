@@ -127,12 +127,22 @@ async def fetch_sessions(http_client, url: str, token: str) -> dict | None:
 
 
 def _waiting_names(daten: dict) -> list[str]:
+    """Namen der Sessions, die gerade rechnen.
+
+    Timo, 2026-09-25: "anstatt waiting for input listest du einfach alle
+    running sessions auf, das geht leichter."
+
+    Der Grund dahinter: "wartet auf Eingabe" ist bei Claude Code kein
+    trennscharfer Zustand — die App nennt JEDE untaetige Session so, und bei
+    29 Sessions sind das fast alle. "Laeuft gerade" ist dagegen eindeutig: Der
+    Zustand kommt direkt aus Claude Code und ist entweder wahr oder nicht.
+    """
     sessions = daten.get("sessions")
     if not isinstance(sessions, list):
         return []
     roh = []
     for s in sessions:
-        if isinstance(s, dict) and s.get("zustand") == "wartet":
+        if isinstance(s, dict) and s.get("zustand") == "arbeitet":
             name = str(s.get("name", "")).strip()
             if name:
                 roh.append(name)
@@ -195,7 +205,7 @@ def merge_into_payload(payload: dict, daten: dict | None,
     costs the device its usage numbers.
 
     Field names are short because every byte competes with the usage data:
-      sw  waiting count      sa  working count
+      sw  waiting count      sa  working count (die Namen gehoeren hierzu)
       sg  parked count       sn  waiting names, as many as fit
       sx  names dropped for space
     """
@@ -218,7 +228,9 @@ def merge_into_payload(payload: dict, daten: dict | None,
     # a session as waiting when it finished four minutes ago sends the user to
     # the wrong window.
     if veraltet or not daten.get("frisch", True):
-        merged["sx"] = merged["sw"]
+        # Die verschwiegenen Namen sind die LAUFENDEN — seit dem 2026-09-25
+        # zeigt das Geraet die, nicht die wartenden.
+        merged["sx"] = merged["sa"]
         return merged
 
     namen = _waiting_names(daten)
