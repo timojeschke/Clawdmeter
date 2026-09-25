@@ -321,6 +321,11 @@ static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    
 // Senkrechter Ausgleich der Ziffern im Batteriekoerper, ausgemessen.
 #define BATT_ZAHL_Y_KORR -2
 
+// Wie lange der letzte Sessionstand ohne Nachschub weitergilt. Der Daemon
+// schickt alle drei Sekunden; zwei Minuten decken einen Serverneustart und
+// einen Verbindungsabbruch ab, ohne veraltete Namen ewig stehen zu lassen.
+#define SESSIONS_STALE_MS (2u * 60u * 1000u)
+
 #define BATT_FILL_OPA LV_OPA_COVER
 
 static lv_obj_t* battery_body;
@@ -805,7 +810,14 @@ static void init_sessions_screen(lv_obj_t* scr) {
 static void update_sessions_screen(const UsageData* d) {
     if (!sessions_container) return;
 
-    if (!d->sessions_valid) {
+    // Der letzte bekannte Stand gilt eine Weile weiter. Erst wenn laenger
+    // nichts kam, ist "No session data" die Wahrheit statt eines Schreckens
+    // bei jedem Serverhaenger.
+    const bool sessions_bekannt =
+        d->sessions_valid &&
+        (lv_tick_get() - (uint32_t)d->sessions_last_ms) < SESSIONS_STALE_MS;
+
+    if (!sessions_bekannt) {
         for (int i = 0; i < 3; i++) lv_label_set_text(sess_count_lbl[i], "-");
         for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
             lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
@@ -1174,6 +1186,8 @@ static void uhr_tick(void) {
         snprintf(tbuf, sizeof(tbuf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
     }
     titel_setzen(tbuf);
+    // Auch auf dem Clawd-Bildschirm, dort als Pixel-Art in der Ecke.
+    splash_set_clock(tbuf);
 }
 
 void ui_tick_anim(void) {
@@ -1441,7 +1455,10 @@ void ui_update_battery(int percent, bool charging) {
     lv_obj_set_width(battery_fill, fuellung);
 
     lv_color_t farbe = THEME_ACCENT;
-    if (charging)                 farbe = THEME_GREEN;
+    // Timo, 2026-09-25: beim Laden die Akzentfarbe, nicht Gruen. Gruen gehoert
+    // hier zu den Nutzungsbalken und hiesse dort "viel Luft" — auf der
+    // Batterie sagte es faelschlich dasselbe.
+    if (charging)                 farbe = THEME_ACCENT;
     else if (pct <= BATT_LOW_PCT) farbe = THEME_RED;
     lv_obj_set_style_bg_color(battery_fill, farbe, 0);
 

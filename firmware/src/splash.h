@@ -50,3 +50,8 @@ void splash_mascot_set_visible(bool v);
 // stays half erased. Callers that know something else just painted use this.
 // No-op where the splash goes through an LVGL canvas.
 void splash_force_repaint(void);
+
+// Uhrzeit fuer die Ecke des Clawd-Bildschirms. Wird dort als Pixel-Art
+// gezeichnet, weil diese Seite direkt aufs Panel malt und ein LVGL-Textfeld
+// beim naechsten Bild ueberschrieben waere. Leerer Text blendet sie aus.
+void splash_set_clock(const char* text);

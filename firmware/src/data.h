@@ -47,4 +47,8 @@ struct UsageData {
     char sessions_names[SESSIONS_MAX_NAMES][SESSIONS_NAME_LEN];
     int  sessions_name_count;
     int  sessions_hidden;
+    // Wann zuletzt Sessionfelder ankamen (millis). Fehlen sie in einer
+    // einzelnen Nachricht, heisst das "diesmal nichts dabei", nicht "es gibt
+    // nichts" — siehe parse_json().
+    unsigned long sessions_last_ms;
 };

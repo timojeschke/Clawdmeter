@@ -134,8 +134,17 @@ static bool parse_json(const char* json, UsageData* out) {
     // Session fields are optional — the daemon only sends them when it has been
     // pointed at a sessions server. "sw" absent means unknown, which the UI
     // must not render as three zeros.
-    out->sessions_valid = doc["sw"].is<int>();
-    if (out->sessions_valid) {
+    //
+    // Fehlen sie, bleibt der bisherige Stand stehen, statt ihn zu verwerfen.
+    // Grund: Der Daemon laesst die Felder auch dann weg, wenn der Sessions-
+    // Server einmal nicht antwortet oder ein Schreibvorgang auf die Fassung
+    // ohne Sessions zurueckfaellt. Beides dauert Sekunden — vorher sprang die
+    // Anzeige dabei jedes Mal auf "No session data" und behauptete damit
+    // etwas Falsches. Wie lange der alte Stand gilt, entscheidet die UI
+    // anhand von sessions_last_ms.
+    if (doc["sw"].is<int>()) {
+        out->sessions_valid = true;
+        out->sessions_last_ms = millis();
         out->sessions_waiting = doc["sw"] | 0;
         out->sessions_working = doc["sa"] | 0;
         out->sessions_parked  = doc["sg"] | 0;
