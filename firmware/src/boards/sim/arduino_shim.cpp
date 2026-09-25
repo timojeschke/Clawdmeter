@@ -32,6 +32,27 @@ SimSerial Serial;
 #define PREF_SLOTS 16
 static struct { char key[16]; uint8_t val; bool used; } store[PREF_SLOTS];
 
+// Eigene Ablage fuer die breiteren Werte (Verbrauchsrate der Batterie).
+static struct { char key[16]; uint32_t val; bool used; } store32[PREF_SLOTS];
+
+uint32_t Preferences::getULong(const char* key, uint32_t def) {
+    for (auto& s : store32)
+        if (s.used && strcmp(s.key, key) == 0) return s.val;
+    return def;
+}
+size_t Preferences::putULong(const char* key, uint32_t value) {
+    for (auto& s : store32)
+        if (s.used && strcmp(s.key, key) == 0) { s.val = value; return 4; }
+    for (auto& s : store32)
+        if (!s.used) {
+            s.used = true;
+            strncpy(s.key, key, sizeof(s.key) - 1);
+            s.val = value;
+            return 4;
+        }
+    return 0;
+}
+
 uint8_t Preferences::getUChar(const char* key, uint8_t def) {
     for (auto& s : store)
         if (s.used && strcmp(s.key, key) == 0) return s.val;

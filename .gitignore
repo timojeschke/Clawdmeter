@@ -2,6 +2,12 @@
 firmware/.pio/
 firmware/.vscode/
 
+# Screenshots des Simulators (SIM_AUTOSHOT_PATH). Landen sonst beim naechsten
+# "git add -A" im Repository — genau so ist eine 676 KB grosse BMP-Datei
+# hineingeraten.
+firmware/sim-autoshot.bmp
+firmware/*.bmp
+
 # OS
 .DS_Store
 

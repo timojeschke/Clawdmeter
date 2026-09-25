@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "splash.h"
 #include "brightness.h"
+#include <Preferences.h>
 #include "battery_runtime.h"
 #include <lvgl.h>
 #include <time.h>
@@ -489,6 +490,8 @@ static lv_obj_t* make_pill(lv_obj_t* parent, const char* text) {
 
 // Builds the battery out of primitives: body, fill, contact stub, number.
 // Right-aligned as a unit so the stub lands where the old icon's edge was.
+static void rate_laden(void);
+
 static void battery_create(lv_obj_t* parent) {
     // Boards without battery telemetry never show the indicator (per the HAL
     // contract; previously every board drew the empty-battery glyph).
@@ -743,8 +746,6 @@ static void init_sessions_screen(lv_obj_t* scr) {
     // Position einmal beim Aufbau, eine spaeter geaenderte Hoehe erreicht sie
     // nicht mehr.
     sess_list_max_h = L.scr_h - liste_y - L.margin;
-    const int16_t nutzbar = sess_list_max_h - erste_zeile
-                          - L.sess_caption_font->line_height - L.panel_pad_y;
     sess_max_zeilen = SESS_ZEILEN_WUNSCH;
     // Timo, 2026-09-25: "bisschen mehr abstand zum +xx more, die abstaende
     // zwischen den sessions einfach verringern." Die Zeilen stehen deshalb
@@ -818,8 +819,6 @@ static void update_sessions_screen(const UsageData* d) {
         lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
         return;
     }
-    lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
-
     lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
@@ -1005,6 +1004,7 @@ void ui_init(void) {
     }
 
     battery_create(scr);
+    rate_laden();
 }
 
 void ui_update(const UsageData* data) {
@@ -1216,6 +1216,33 @@ void ui_tick_anim(void) {
 }
 
 static screen_t prev_non_splash_screen = SCREEN_USAGE;
+// Die gemessene Verbrauchsrate ueberlebt Neustart und Kabel, indem sie im
+// NVS liegt — derselbe Bereich wie die Helligkeit. Geschrieben wird nur, wenn
+// sie sich geaendert hat: Flash hat endlich viele Schreibzyklen, und die Rate
+// aendert sich hoechstens alle paar Minuten.
+#define RATE_SCHLUESSEL "battrate"
+
+static uint32_t rate_zuletzt_gesichert = 0;
+
+static void rate_laden(void) {
+    Preferences prefs;
+    prefs.begin("clawdmeter", true);
+    const uint32_t rate = prefs.getULong(RATE_SCHLUESSEL, 0);
+    prefs.end();
+    battery_runtime_set_rate(rate);
+    rate_zuletzt_gesichert = rate;
+}
+
+static void rate_sichern_wenn_geaendert(void) {
+    const uint32_t rate = battery_runtime_rate();
+    if (rate == 0 || rate == rate_zuletzt_gesichert) return;
+    Preferences prefs;
+    prefs.begin("clawdmeter", false);
+    prefs.putULong(RATE_SCHLUESSEL, rate);
+    prefs.end();
+    rate_zuletzt_gesichert = rate;
+}
+
 static void apply_battery_visibility(void) {
     if (!battery_body) return;
     // On the splash the whole indicator gets out of the way of the artwork.
@@ -1346,12 +1373,6 @@ static void seite_aufblenden(lv_obj_t* container) {
     wechsel_messung_starten();
 }
 
-// Richtung des naechsten Wechsels: +1 vorwaerts, -1 rueckwaerts. Wird von
-// ui_next_screen/ui_prev_screen gesetzt und nach jedem Wechsel auf vorwaerts
-// zurueckgestellt, damit ein direkter ui_show_screen-Aufruf nicht die Richtung
-// des letzten Knopfdrucks erbt.
-static int8_t wechsel_richtung = 1;
-
 void ui_show_screen(screen_t screen) {
     const bool wechsel = (screen != current_screen);
 
@@ -1383,53 +1404,19 @@ void ui_show_screen(screen_t screen) {
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
     letzte_seitenaktion_ms = lv_tick_get();
-    wechsel_richtung = 1;
     apply_battery_visibility();
 }
 
 void ui_next_screen(void) {
-    wechsel_richtung = 1;
     ui_show_screen((screen_t)((current_screen + 1) % SCREEN_COUNT));
 }
 
 void ui_prev_screen(void) {
-    wechsel_richtung = -1;
     ui_show_screen((screen_t)((current_screen + SCREEN_COUNT - 1) % SCREEN_COUNT));
-}
-
-void ui_toggle_splash(void) {
-    if (current_screen == SCREEN_SPLASH) ui_show_screen(prev_non_splash_screen);
-    else                                  ui_show_screen(SCREEN_SPLASH);
 }
 
 screen_t ui_get_current_screen(void) {
     return current_screen;
-}
-
-// --- Automatischer Seitenwechsel ------------------------------------------
-//
-// Das Geraet steht auf dem Tisch und wird im Vorbeigehen gelesen. Wer sehen
-// will, was gerade wartet, soll nicht erst einen Knopf suchen muessen.
-//
-// Der Clawd-Splash ist absichtlich nicht im Umlauf: Er ist der Bildschirm-
-// schoner und wird bewusst aufgerufen, nicht zugeteilt. Und jeder Knopfdruck
-// setzt die Uhr zurueck — wer selbst blaettert, will nicht nach acht Sekunden
-// weitergeschoben werden.
-#define AUTO_WECHSEL_MS 12000
-
-static bool auto_wechsel_an = false;
-
-void ui_auto_rotate_set(bool an) { auto_wechsel_an = an; }
-
-void ui_auto_rotate_tick(void) {
-    if (!auto_wechsel_an) return;
-    if (current_screen == SCREEN_SPLASH) return;   // Bildschirmschoner bleibt
-    const uint32_t jetzt = lv_tick_get();
-    if (jetzt - letzte_seitenaktion_ms < AUTO_WECHSEL_MS) return;
-    letzte_seitenaktion_ms = jetzt;
-    wechsel_richtung = 1;   // immer vorwaerts, wie beim rechten Knopf
-    ui_show_screen(current_screen == SCREEN_USAGE ? SCREEN_SESSIONS
-                                                  : SCREEN_USAGE);
 }
 
 void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) {
@@ -1459,6 +1446,7 @@ void ui_update_battery(int percent, bool charging) {
     lv_obj_set_style_bg_color(battery_fill, farbe, 0);
 
     battery_runtime_sample(percent, charging, lv_tick_get());
+    rate_sichern_wenn_geaendert();
     if (battery_sub_lbl) {
         const int rest = battery_runtime_minutes();
         if (charging) {

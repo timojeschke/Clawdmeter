@@ -13,4 +13,7 @@ public:
     void end(void) {}
     uint8_t getUChar(const char* key, uint8_t def = 0);
     size_t  putUChar(const char* key, uint8_t value);
+    // Fuer die gespeicherte Verbrauchsrate der Batterie (battery_runtime).
+    uint32_t getULong(const char* key, uint32_t def = 0);
+    size_t   putULong(const char* key, uint32_t value);
 };

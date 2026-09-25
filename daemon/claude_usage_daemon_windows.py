@@ -255,25 +255,6 @@ def report_unknown_ratelimit_headers(headers) -> None:
         log("No rate-limit headers beyond the ones already used.")
 
 
-async def add_session_fields(payload: dict) -> dict:
-    """Merge remote Claude Code session states into the usage payload.
-
-    Opt-in: without `sessions_url` and `sessions_token` in the config this is a
-    no-op and costs nothing. The config is re-read every cycle, same as the
-    chime and clock settings, so enabling it needs no restart.
-
-    A failing sessions server never costs the device its usage numbers —
-    fetch_sessions returns None and merge_into_payload passes the payload
-    through untouched.
-    """
-    url, token = read_sessions_config(CONFIG_FILE)
-    if not url:
-        return payload
-    async with httpx.AsyncClient() as http:
-        state = await fetch_sessions(http, url, token)
-    return merge_into_payload(payload, state)
-
-
 async def add_session_fields_paar(payload: dict) -> tuple[dict, dict]:
     """Zwei Fassungen derselben Nutzlast: grosszuegig und sicher.
 
