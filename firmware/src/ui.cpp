@@ -317,6 +317,9 @@ static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    
 #define SCOPED_RING_Y_KORR 2
 #define SCOPED_RING_DICKE  5
 
+// Senkrechter Ausgleich der Ziffern im Batteriekoerper, ausgemessen.
+#define BATT_ZAHL_Y_KORR -2
+
 #define BATT_FILL_OPA LV_OPA_COVER
 
 static lv_obj_t* battery_body;
@@ -539,11 +542,15 @@ static void battery_create(lv_obj_t* parent) {
     lv_label_set_text(battery_lbl, "");
     if (L.batt_inside) {
         // Nicht lv_obj_center(): Das zentriert den Textkasten, nicht die
-        // Ziffern. Von den 31 px Zeilenhoehe sind 6 px fuer Unterlaengen
-        // reserviert (base_line), und Ziffern haben keine — die Tinte sitzt
-        // also im oberen Teil des Kastens und wirkt zu hoch. Um die halbe
-        // Unterlaenge nach unten versetzt steht sie mittig.
-        lv_obj_align(battery_lbl, LV_ALIGN_CENTER, 0, L.batt_font->base_line / 2);
+        // Ziffern. Der Kasten ist 31 px hoch, die Ziffern belegen davon nur
+        // 17 px, und sie sitzen darin nicht mittig.
+        //
+        // Der Wert ist am gerenderten Bild ausgemessen, nicht aus den
+        // Schriftmassen hergeleitet: Innenraum 30 px, Tinte 17 px hoch mit
+        // 11 px Luft oben und 2 px unten. Mein erster Versuch rechnete mit
+        // base_line und verschob in die FALSCHE Richtung — Timo hat es
+        // gesehen, bevor ich es nachgemessen hatte.
+        lv_obj_align(battery_lbl, LV_ALIGN_CENTER, 0, BATT_ZAHL_Y_KORR);
     }
 
     // One line under the battery: the charge symbol while on the cable, an
