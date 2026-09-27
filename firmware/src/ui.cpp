@@ -63,7 +63,7 @@ struct Layout {
     int16_t batt_w;                  // battery icon width, for position math
     const lv_font_t* sess_count_font; // session counts — serif, like the title
     const lv_font_t* sess_name_font;    // die Sessionnamen selbst
-    const lv_font_t* sess_caption_font; // "Waiting" / "Waiting for input" —
+    const lv_font_t* sess_caption_font; // "Total" / "Running" / "Running now" —
                                         // read from across the desk, so a step
                                         // above the pace line they used to share
     const lv_font_t* batt_font;      // battery percentage
@@ -725,8 +725,17 @@ static void init_sessions_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_color(titel, COL_TEXT, 0);
     lv_obj_align(titel, LV_ALIGN_TOP_MID, L.title_nudge, L.title_y);
 
-    // Counts panel. Waiting carries the accent because it is the only one that
-    // asks something of the user; parked is dimmed because it asks nothing.
+    // Counts panel. Running carries the accent, because that is the number the
+    // page is about — the names below it are exactly those sessions.
+    //
+    // Timo, 2026-09-27: "möchte anstatt die waiting zahl was anderes haben. Die
+    // running zahl soll orange werden. Total möchte ich, das gut."
+    //
+    // Why "Waiting" had to go: it was never a sharp state. Claude Code calls
+    // EVERY idle session that, so with 29 sessions open it counted almost all
+    // of them — measured 2026-09-25, see the vault note. "Total" and "Idle" are
+    // both exact, and together with Running the row adds up again: a glance
+    // tells him how many sessions are open and how many of them are working.
     // Height from the content, not from the usage screen's panel height —
     // the number plus its caption is barely half of that, and the leftover
     // read as a broken panel.
@@ -735,8 +744,8 @@ static void init_sessions_screen(lv_obj_t* scr) {
     lv_obj_t* zahlen = make_panel(sessions_container, L.margin, L.content_y,
                                   L.content_w, zahlen_h);
     const int16_t spalte = (L.content_w - 2 * L.panel_pad_x) / 3;
-    const char* beschriftung[3] = { "Waiting", "Running", "Parked" };
-    const lv_color_t farbe[3]   = { COL_ACCENT, COL_TEXT, COL_DIM };
+    const char* beschriftung[3] = { "Total", "Running", "Idle" };
+    const lv_color_t farbe[3]   = { COL_TEXT, COL_ACCENT, COL_DIM };
     for (int i = 0; i < 3; i++) {
         sess_count_lbl[i] = make_session_count(zahlen, spalte * i, spalte,
                                                beschriftung[i], farbe[i]);
@@ -871,9 +880,17 @@ static void update_sessions_screen(const UsageData* d) {
     lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text_fmt(sess_count_lbl[0], "%d", d->sessions_waiting);
+    // Total und Idle werden hier gerechnet, nicht gefunkt: Die Summe der drei
+    // gefunkten Zahlen IST die Gesamtzahl offener Sessions, und "untaetig" ist
+    // genau das, was nicht arbeitet. Zwei zusaetzliche Felder auf der Leitung
+    // waeren dieselbe Information zum Preis von Namen in der Liste — der
+    // Schreibvorgang ist auf 244 Byte begrenzt.
+    const int gesamt = d->sessions_waiting + d->sessions_working
+                     + d->sessions_parked;
+    lv_label_set_text_fmt(sess_count_lbl[0], "%d", gesamt);
     lv_label_set_text_fmt(sess_count_lbl[1], "%d", d->sessions_working);
-    lv_label_set_text_fmt(sess_count_lbl[2], "%d", d->sessions_parked);
+    lv_label_set_text_fmt(sess_count_lbl[2], "%d",
+                          gesamt - d->sessions_working);
 
     // Was nicht auf den Schirm passt, wird gezaehlt statt abgeschnitten —
     // sonst behauptet die Liste Vollstaendigkeit, die sie nicht hat.
