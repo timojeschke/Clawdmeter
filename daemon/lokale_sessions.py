@@ -26,11 +26,15 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 # Dieselbe Abbildung wie im Sammler auf dem Server
-# (`collector/sammle-sessions.py`). `shell` zählt als Arbeit: Die Session führt
-# dann einen Befehl aus, ist also beschäftigt.
+# (`collector/sammle-sessions.py`).
+#
+# `shell` ist KEINE Arbeit: Die Antwort ist fertig, nur ein Hintergrundprozess
+# lebt noch. Eine Session, die im Vordergrund einen Befehl ausführt, meldet
+# `busy` — gemessen am 2026-09-27, nachdem das Gerät eine seit 37 Minuten
+# fertige Session als laufend zeigte.
 ZUSTAND_ABBILDUNG = {
     "busy": "arbeitet",
-    "shell": "arbeitet",
+    "shell": None,
     "waiting": "wartet",
     "idle": None,
 }

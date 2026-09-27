@@ -40,7 +40,7 @@ def tote_pid():
 
 @pytest.mark.parametrize("status, erwartet", [
     ("busy", "arbeitet"),
-    ("shell", "arbeitet"),     # fuehrt einen Befehl aus, also beschaeftigt
+    ("shell", "geparkt"),      # fertig, nur ein Hintergrundprozess lebt (2026-09-27)
     ("waiting", "wartet"),
     ("idle", "geparkt"),
     ("etwas neues", "geparkt"),  # unbekannter Wert darf nichts behaupten
