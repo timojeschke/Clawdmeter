@@ -811,7 +811,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_font(sess_hint_lbl, L.reset_font, 0);
     lv_obj_set_style_text_color(sess_hint_lbl, COL_DIM, 0);
     lv_obj_set_pos(sess_hint_lbl, 0, erste_zeile);
-    lv_label_set_text(sess_hint_lbl, "No session data");
+    lv_label_set_text(sess_hint_lbl, "No connection");
 
     lv_obj_add_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
 }
@@ -863,7 +863,7 @@ static void update_sessions_screen(const UsageData* d) {
         lv_obj_set_height(sess_list_panel, sess_list_max_h);
         // Eine Ueberschrift ueber einer Fehlmeldung widerspricht sich.
         lv_obj_add_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(sess_hint_lbl, "Keine Verbindung");
+        lv_label_set_text(sess_hint_lbl, "No connection");
         lv_obj_align(sess_hint_lbl, LV_ALIGN_CENTER, 0, 0);
         lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
         return;
@@ -896,7 +896,7 @@ static void update_sessions_screen(const UsageData* d) {
         lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(sess_list_panel, sess_list_max_h);
-        lv_label_set_text(sess_hint_lbl, "Nichts läuft gerade");
+        lv_label_set_text(sess_hint_lbl, "Nothing running");
         lv_obj_align(sess_hint_lbl, LV_ALIGN_CENTER, 0, 0);
         lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
         return;
