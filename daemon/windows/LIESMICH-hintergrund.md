@@ -79,6 +79,6 @@ beenden. Sonst über den Task-Manager: `claude.exe` **und** das übergeordnete
 
 | Bild | wahrscheinliche Ursache |
 |---|---|
-| `ListAgents` zeigt Timo-PC nicht mehr | Claude Code startet nicht durch — `claude-neustarts.log` ansehen |
+| Timo-PC ist nicht mehr erreichbar | Entweder hat die Sitzung ihre Remote-Control-Verbindung verloren und läuft weiter — dann „Fenster öffnen" (siehe oben). Oder Claude Code startet nicht durch — dann wächst `claude-neustarts.log`. |
 | Meldungsfenster „claude-start.cmd nicht gefunden" | Die `.cmd` liegt woanders als in `%USERPROFILE%` |
 | Alles still, keine Log-Zeile | Die Verknüpfung zeigt noch aufs alte Ziel, oder `wscript.exe` fehlt im Ziel |
