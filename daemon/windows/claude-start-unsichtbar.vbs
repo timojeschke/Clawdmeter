@@ -30,4 +30,23 @@ If Not fso.FileExists(cmdPfad) Then
     WScript.Quit 1
 End If
 
+' Laeuft schon eine Kette, nichts tun: Eine laufende Sitzung wird hier nie
+' beendet (Anmeldung, versehentlicher Doppelklick). Gesucht wird das cmd.exe
+' der Schleife bzw. eines offenen Fensters; dieses Skript selbst ist wscript,
+' kann sich also nicht selbst finden. (2026-09-28, nachdem zwei Ketten liefen.)
+If LaeuftSchon() Then WScript.Quit 0
+
 shell.Run """" & cmdPfad & """", 0, False
+
+Function LaeuftSchon()
+    Dim wmi, p, zeile
+    LaeuftSchon = False
+    Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+    For Each p In wmi.ExecQuery("SELECT CommandLine FROM Win32_Process WHERE Name='cmd.exe'")
+        zeile = LCase(p.CommandLine & "")
+        If InStr(zeile, "claude-start.cmd") > 0 Or InStr(zeile, "claude-fenster.cmd") > 0 Then
+            LaeuftSchon = True
+            Exit Function
+        End If
+    Next
+End Function

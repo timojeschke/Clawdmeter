@@ -1,6 +1,6 @@
 # Claude Code auf Windows im Hintergrund starten
 
-Stand: 2026-09-27
+Stand: 2026-09-28
 
 Die Sitzung lief bisher in einem sichtbaren CMD-Fenster. Das war **Absicht**:
 Vertrauensfrage und Anmeldung sollten nicht unsichtbar hängen. Beides ist
@@ -35,15 +35,45 @@ Fenster wieder sichtbar machen und nachsehen.
 1. `claude-start-unsichtbar.vbs` nach `%USERPROFILE%` legen.
 2. Verknüpfung `…\Start Menu\Programs\Startup\Claude Code.lnk` auf
    `wscript.exe "%USERPROFILE%\claude-start-unsichtbar.vbs"` zeigen lassen.
-3. **Zweite Verknüpfung behalten**, etwa „Claude Code (Fenster)", die weiter
-   direkt auf `claude-start.cmd` zeigt. Ohne sie gibt es keinen bequemen Weg
-   zurück, wenn etwas klemmt.
+3. `claude-fenster.cmd` nach `%USERPROFILE%` legen und eine
+   **Desktop**-Verknüpfung „Claude Code — Fenster öffnen" darauf anlegen.
+   Nicht in den Autostart-Ordner — dort starteten beim Anmelden zwei.
+
+## Die zwei Verknüpfungen
+
+| Verknüpfung | Ort | tut |
+|---|---|---|
+| Claude Code — Hintergrund | Autostart | startet unsichtbar — **tut nichts**, wenn schon eine Sitzung läuft |
+| Claude Code — Fenster öffnen | Desktop | beendet jede laufende Sitzung, öffnet frisch und sichtbar |
+
+Beide sind gegen Doppelstart gesichert, aber **absichtlich verschieden**:
+
+- `claude-start-unsichtbar.vbs` fragt per WMI, ob schon ein `cmd.exe` mit
+  `claude-start.cmd` oder `claude-fenster.cmd` in der Befehlszeile läuft, und
+  beendet sich dann still. Der Autostart darf eine laufende, erreichbare
+  Sitzung nie abschießen.
+- `claude-fenster.cmd` beendet jede solche Kette per `taskkill /T` und startet
+  danach sichtbar — wer das Fenster öffnet, will an die Sitzung heran. Das
+  eigene `cmd.exe` nimmt es über die Elternprozess-ID der PowerShell aus.
+
+**Gesucht wird das `cmd.exe`, nicht `wscript.exe`:** `Run …, 0, False` wartet
+nicht, wscript beendet sich sofort. Ein erster Entwurf suchte genau diesen
+Prozess und hätte nie etwas gefunden.
+
+## Die eine Regel
+
+**„Timo-PC" ist weg → „Fenster öffnen" nehmen.** Nicht den Hintergrundstart.
+
+Eine Sitzung kann ihre Remote-Control-Verbindung verlieren und trotzdem
+weiterlaufen. Von außen sieht sie beendet aus, blockiert aber den
+Hintergrundstart — der Klick bliebe wirkungslos. „Fenster öffnen" räumt sie
+weg. So geschehen in der Nacht zum 2026-09-28.
 
 ## Beenden
 
-Ohne Fenster gibt es kein Strg+C. Beenden über den Task-Manager: den Prozess
-`node.exe` beziehungsweise `claude` und das übergeordnete `cmd.exe` — sonst
-startet die Schleife sofort neu.
+Ohne Fenster gibt es kein Strg+C. Am einfachsten „Fenster öffnen" und dort
+beenden. Sonst über den Task-Manager: `claude.exe` **und** das übergeordnete
+`cmd.exe` — sonst startet die Schleife sofort neu.
 
 ## Wenn es klemmt
 

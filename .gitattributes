@@ -1,0 +1,10 @@
+# Windows-Skripte werden unter Windows mit CRLF ausgecheckt.
+#
+# cmd.exe liest Stapeldateien blockweise und findet Sprungmarken (`:loop`,
+# `goto`) bei reinen LF-Zeilenenden nicht zuverlaessig. Die Dateien entstehen
+# aber oft auf Linux oder mit Werkzeugen, die LF schreiben — so am 2026-09-28
+# `claude-fenster.cmd`. Im Repository liegen sie normalisiert, beim Auschecken
+# bekommen sie CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.vbs text eol=crlf
