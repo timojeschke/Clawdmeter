@@ -62,6 +62,15 @@ States: 0 starting · 1 idle · 2 thinking · 3 responding · 4 running-tool ·
 Override the scenario file with `SIM_SCENARIO=<path>`. If the file is missing,
 a small built-in state list is used.
 
+`SIM_LINK=off` starts with the BLE link down, for the screens that only appear
+without a connection (the pairing hint, the sessions page's "No connection").
+Interactively that is the `d` key — but the dummy video driver receives no key
+presses, so headless capture of those screens needs this switch.
+
+An empty scenario file falls back to the built-in states, so it will **not**
+give you a data-less device. To capture "connected but no session data", send a
+payload that carries usage fields and no `sw`/`sa`/`sg`.
+
 ## Headless screenshots (CI-friendly)
 
 ```bash
