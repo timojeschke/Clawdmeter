@@ -856,10 +856,15 @@ static void update_sessions_screen(const UsageData* d) {
         }
         lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_height(sess_list_panel, sess_row_h + 2 * L.panel_pad_y);
-        // "Waiting for input" über "No session data" widerspricht sich.
+        // Die Karte reicht bis zum unteren Rand, wie die Karten der
+        // Usage-Seite. Vorher schrumpfte sie auf einen Streifen und liess
+        // darunter ein grosses Loch — Timo, 2026-09-27: "der sah nicht gut
+        // designt aus, der soll dann aussehen wie der Usage screen."
+        lv_obj_set_height(sess_list_panel, sess_list_max_h);
+        // Eine Ueberschrift ueber einer Fehlmeldung widerspricht sich.
         lv_obj_add_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(sess_hint_lbl, 0, 0);
+        lv_label_set_text(sess_hint_lbl, "Keine Verbindung");
+        lv_obj_align(sess_hint_lbl, LV_ALIGN_CENTER, 0, 0);
         lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
         return;
     }
@@ -883,6 +888,18 @@ static void update_sessions_screen(const UsageData* d) {
         } else {
             lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
         }
+    }
+
+    // Verbunden, aber nichts laeuft: Das ist eine Aussage und kein Fehler.
+    // Eine leere Karte sieht dagegen kaputt aus.
+    if (gezeigt == 0 && d->sessions_hidden == 0) {
+        lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(sess_list_panel, sess_list_max_h);
+        lv_label_set_text(sess_hint_lbl, "Nichts läuft gerade");
+        lv_obj_align(sess_hint_lbl, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
+        return;
     }
 
     const int verborgen = d->sessions_hidden + zusaetzlich_verborgen;
