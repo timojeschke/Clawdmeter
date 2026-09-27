@@ -3,7 +3,15 @@
 // Auto-sleep / idle screen-off configuration.
 // All tunables live here so nothing is hard-coded in main.cpp / idle.cpp.
 
-#define IDLE_TIMEOUT_MS             (30UL * 60UL * 1000UL)  // 30 min
+// 0 = der Bildschirm geht NIE von allein aus.
+//
+// Timo, 2026-09-27: "der Bildschirmtimeout auch bitte weg, der soll nie von
+// alleine ausgehen der Bildschirm." Vorher 30 Minuten — und die griffen ohnehin
+// nur im Akkubetrieb, weil IDLE_SLEEP_WHEN_CHARGING false ist.
+//
+// Der Bildschirmschoner von Hand bleibt davon unberührt: kurzer Druck auf den
+// mittleren Knopf ruft idle_sleep_now() und schaltet sofort dunkel.
+#define IDLE_TIMEOUT_MS             0UL
 #define IDLE_FADE_OUT_MS            400      // fade-to-black duration
 #define IDLE_FADE_IN_MS             180      // wake fade-in (snappier)
 #define IDLE_FADE_STEP_MS           20       // tick interval per fade step

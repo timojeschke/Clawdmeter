@@ -102,7 +102,10 @@ void idle_tick(void) {
 
     switch (state) {
     case STATE_AWAKE:
-        if (now - last_activity_ms >= IDLE_TIMEOUT_MS) {
+        // IDLE_TIMEOUT_MS == 0 heisst "nie von allein aus". Ohne diese Grenze
+        // waere die Bedingung sofort wahr und der Schirm ginge bei jedem Tick
+        // dunkel — aus "kein Timeout" wuerde "Timeout null".
+        if (IDLE_TIMEOUT_MS > 0 && now - last_activity_ms >= IDLE_TIMEOUT_MS) {
             begin_fade(0, now);
             state = STATE_FADING_OUT;
         }
