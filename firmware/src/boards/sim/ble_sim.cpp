@@ -87,6 +87,14 @@ static void refresh_title(void) {
 
 void ble_init(void) {
     load_scenario();
+    // SIM_LINK=off startet ohne Funkverbindung. Ohne diesen Schalter lassen
+    // sich die verbindungslosen Bildschirme headless gar nicht aufnehmen: Der
+    // Wechsel haengt sonst an der Taste "d", und im Dummy-Videotreiber kommt
+    // keine Taste an. Same Muster wie SIM_SCENARIO und SIM_AUTOSHOT_MS.
+    const char* link = getenv("SIM_LINK");
+    if (link && (strcmp(link, "off") == 0 || strcmp(link, "0") == 0)) {
+        connected = false;
+    }
     pending = true;
     refresh_title();
 }

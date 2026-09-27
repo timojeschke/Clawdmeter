@@ -266,6 +266,7 @@ static lv_obj_t* usage_container;
 static lv_obj_t* sessions_container;
 static lv_obj_t* sess_count_lbl[3];     // waiting / working / parked
 static lv_obj_t* sess_name_lbl[SESSIONS_MAX_NAMES];
+static lv_obj_t* sess_counts_panel;     // Total / Running / Idle
 static lv_obj_t* sess_list_panel;       // card holding the waiting sessions
 static lv_obj_t* sess_list_caption;     // "Waiting for input" above the names
 static lv_obj_t* sess_more_lbl;         // "+N more" when the list was trimmed
@@ -326,10 +327,6 @@ static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    
 // einen Verbindungsabbruch ab, ohne veraltete Namen ewig stehen zu lassen.
 #define SESSIONS_STALE_MS (2u * 60u * 1000u)
 
-// Wie lange eine eigene Auswahl geschuetzt ist, bevor bei fehlenden Daten auf
-// die Animation gewechselt wird.
-#define LEERE_WARTEZEIT_MS (10u * 1000u)
-
 #define BATT_FILL_OPA LV_OPA_COVER
 
 static lv_obj_t* battery_body;
@@ -362,12 +359,22 @@ static const uint32_t DATA_FRESH_MS = 90000;  // usage counts as "live" within t
 // ---- Shared ----
 static lv_image_dsc_t logo_dsc;
 static screen_t current_screen = SCREEN_USAGE;
-// Wann zuletzt jemand selbst geblaettert hat. Der Ausweich auf den
-// Clawd-Bildschirm darf eine bewusste Auswahl nicht sofort ueberstimmen.
-static uint32_t letzte_seitenaktion_ms;
-// Merkt, dass der Clawd-Bildschirm NICHT von Hand gewaehlt wurde, sondern
-// weil keine Sessiondaten da waren — nur dann wird auch selbst zurueckgekehrt.
-static bool splash_wegen_leere = false;
+
+// Die schlafende Kreatur der Usage-Seite, damit die Sessionseite dieselbe
+// zeigen kann. splash.cpp haelt genau EINE (siehe splash.h) — ein zweites
+// Exemplar waere ein zweiter Puffer von rund 32 KB, und der C6 hat kein
+// PSRAM. Sie wird deshalb umgehaengt statt verdoppelt; sichtbar ist ohnehin
+// immer nur eine Seite.
+static lv_obj_t* mini_kreatur = NULL;
+
+// Der zuletzt empfangene Stand. Die Sessionseite muss sich auch dann
+// aktualisieren, wenn gerade NICHTS ankommt — genau das war der Fehler: Ihre
+// Aktualisierung haengt an ui_update(), und die ruft main.cpp nur beim
+// Eintreffen einer Nutzlast. Ohne Funk blieb die Seite deshalb im Zustand vom
+// Aufbau stehen: schmale Karte, linksbuendiger Hinweis, Ueberschrift ueber
+// einer Fehlmeldung.
+static UsageData letzte_daten;
+static bool sessionseite_leer = false;
 static bool     s_ble_connected = false;   // cached BLE connection state
 static uint32_t connected_at_ms = 0;       // when we last entered CONNECTED ("Connected" dwell)
 
@@ -682,8 +689,21 @@ static void build_idle_group(lv_obj_t* parent) {
     // status line carries the words, so no extra text is needed here.
     lv_obj_t* creature = splash_mini_create(idle_group, "cloud", L.idle_px);
     if (creature) lv_obj_align(creature, LV_ALIGN_CENTER, 0, -20);
+    mini_kreatur = creature;
 
     lv_obj_add_flag(idle_group, LV_OBJ_FLAG_HIDDEN);  // update_view_state decides
+}
+
+// Haengt die eine Mini-Kreatur dorthin, wo sie gerade gebraucht wird.
+// Das Umhaengen selbst passiert nur bei echtem Wechsel; das Ausrichten ist
+// billig genug, um es jedes Mal zu tun.
+static void mini_kreatur_zeigen(lv_obj_t* ziel, int16_t y_versatz) {
+    if (!mini_kreatur || !ziel) return;
+    if (lv_obj_get_parent(mini_kreatur) != ziel) {
+        lv_obj_set_parent(mini_kreatur, ziel);
+    }
+    lv_obj_align(mini_kreatur, LV_ALIGN_CENTER, 0, y_versatz);
+    lv_obj_clear_flag(mini_kreatur, LV_OBJ_FLAG_HIDDEN);
 }
 
 // One column of the counts panel: a big number over a quiet caption.
@@ -743,6 +763,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
                            + L.pace_font->line_height + 2 * L.panel_pad_y;
     lv_obj_t* zahlen = make_panel(sessions_container, L.margin, L.content_y,
                                   L.content_w, zahlen_h);
+    sess_counts_panel = zahlen;
     const int16_t spalte = (L.content_w - 2 * L.panel_pad_x) / 3;
     const char* beschriftung[3] = { "Total", "Running", "Idle" };
     const lv_color_t farbe[3]   = { COL_TEXT, COL_ACCENT, COL_DIM };
@@ -825,59 +846,63 @@ static void init_sessions_screen(lv_obj_t* scr) {
     lv_obj_add_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
 }
 
+// Der letzte bekannte Stand gilt eine Weile weiter. Erst wenn laenger nichts
+// kam, ist "No session data" die Wahrheit statt eines Schreckens bei jedem
+// Serverhaenger. Eigene Funktion, weil der Takt diese Frage beantworten muss,
+// ohne dafuer die halbe Seite neu zu schreiben.
+static bool sessionsdaten_frisch(const UsageData* d) {
+    return d->sessions_valid
+        && (lv_tick_get() - (uint32_t)d->sessions_last_ms) < SESSIONS_STALE_MS;
+}
+
 static void update_sessions_screen(const UsageData* d) {
     if (!sessions_container) return;
 
-    // Der letzte bekannte Stand gilt eine Weile weiter. Erst wenn laenger
-    // nichts kam, ist "No session data" die Wahrheit statt eines Schreckens
-    // bei jedem Serverhaenger.
-    const bool sessions_bekannt =
-        d->sessions_valid &&
-        (lv_tick_get() - (uint32_t)d->sessions_last_ms) < SESSIONS_STALE_MS;
+    const bool sessions_bekannt = sessionsdaten_frisch(d);
 
-    // Kommen keine Sessiondaten, zeigt das Geraet die Animation statt einer
-    // leeren Karte. Timo, 2026-09-25: "die no data animation auch bei der
-    // Session seite, wenn nichts kommt."
-    //
-    // Warum ein Seitenwechsel und kein eingebettetes Bild: Der Clawd-Bildschirm
-    // zeichnet direkt aufs Panel, weil dieser Chip kein PSRAM hat. Er laesst
-    // sich deshalb nicht in eine Seite einbetten — nur ganz zeigen.
-    //
-    // Eine eigene Auswahl wird dabei respektiert: Wer gerade selbst auf die
-    // Sessionseite geblaettert hat, wird nicht nach einer Sekunde
-    // weggeschoben.
-    const uint32_t seit_aktion = lv_tick_get() - letzte_seitenaktion_ms;
-    if (!sessions_bekannt && current_screen == SCREEN_SESSIONS
-            && seit_aktion > LEERE_WARTEZEIT_MS) {
-        splash_wegen_leere = true;
-        ui_show_screen(SCREEN_SPLASH);
-        return;
-    }
-    if (sessions_bekannt && splash_wegen_leere && current_screen == SCREEN_SPLASH) {
-        splash_wegen_leere = false;
-        ui_show_screen(SCREEN_SESSIONS);
-    }
+    sessionseite_leer = !sessions_bekannt;
 
     if (!sessions_bekannt) {
-        for (int i = 0; i < 3; i++) lv_label_set_text(sess_count_lbl[i], "-");
-        for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
-            lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
+        // Genau der Aufbau der Usage-Seite im selben Fall: keine Karten,
+        // sondern die schlafende Kreatur mittig auf dem Seitenhintergrund.
+        // Timo, 2026-09-27: "da soll dieselbe animation wie beim usage screen
+        // sein."
+        //
+        // Die Karten MUESSEN dafuer weichen, und das ist kein Geschmack: Die
+        // Kreatur haengt in einer Leinwand mit echtem Schwarz als Hintergrund.
+        // Auf dem Seitenhintergrund faellt das nicht auf, in der helleren
+        // Karte stand ein sichtbarer schwarzer Kasten um sie herum.
+        lv_obj_add_flag(sess_counts_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
+
+        // Mitte des Inhaltsbereichs, nicht des Schirms: oben steht die
+        // Kopfzeile mit Uhr und Batterie, und die bleibt sichtbar.
+        const int16_t mitte = L.content_y / 2;
+        mini_kreatur_zeigen(sessions_container, mitte - 18);
+
+        // Genau sagen, was fehlt: ohne Funk ist es die Verbindung zum Rechner,
+        // mit Funk der Server dahinter. Beides "No connection" zu nennen,
+        // schickt bei der Fehlersuche in die falsche Richtung.
+        if (lv_obj_get_parent(sess_hint_lbl) != sessions_container) {
+            lv_obj_set_parent(sess_hint_lbl, sessions_container);
         }
-        lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
-        // Die Karte reicht bis zum unteren Rand, wie die Karten der
-        // Usage-Seite. Vorher schrumpfte sie auf einen Streifen und liess
-        // darunter ein grosses Loch — Timo, 2026-09-27: "der sah nicht gut
-        // designt aus, der soll dann aussehen wie der Usage screen."
-        lv_obj_set_height(sess_list_panel, sess_list_max_h);
-        // Eine Ueberschrift ueber einer Fehlmeldung widerspricht sich.
-        lv_obj_add_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(sess_hint_lbl, "No connection");
-        lv_obj_align(sess_hint_lbl, LV_ALIGN_CENTER, 0, 0);
+        lv_label_set_text(sess_hint_lbl,
+                          s_ble_connected ? "No session data" : "No connection");
+        lv_obj_set_style_text_align(sess_hint_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(sess_hint_lbl, LV_ALIGN_CENTER, 0, mitte + L.idle_px / 2);
         lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    lv_obj_clear_flag(sess_counts_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
+    // Die Kreatur gehoert zurueck auf die Usage-Seite, sonst steht sie ueber
+    // der Liste, die gleich wieder Namen zeigt.
+    if (mini_kreatur && lv_obj_get_parent(mini_kreatur) == sessions_container) {
+        lv_obj_set_parent(mini_kreatur, idle_group);
+        lv_obj_align(mini_kreatur, LV_ALIGN_CENTER, 0, -20);
+        lv_obj_add_flag(mini_kreatur, LV_OBJ_FLAG_HIDDEN);
+    }
     lv_obj_clear_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
     // Total und Idle werden hier gerechnet, nicht gefunkt: Die Summe der drei
@@ -1117,6 +1142,7 @@ void ui_update(const UsageData* data) {
             if (lbl_anim) lv_obj_clear_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
         }
     }
+    letzte_daten = *data;
     update_sessions_screen(data);
     data_ok = data->ok;
     if (!data->ok) return;          // a {"ok":false} "no data" beat → fall through to idle, keep last numbers
@@ -1258,9 +1284,30 @@ static void uhr_tick(void) {
 
 void ui_tick_anim(void) {
     uhr_tick();
+
+    // Die Sessionseite wird vom Takt gefuehrt, nicht von der Nutzlast. Sonst
+    // veraltet sie stumm: main.cpp ruft ui_update() nur, wenn etwas ankommt —
+    // und wenn nichts ankommt, ist genau das die Nachricht, die auf den Schirm
+    // gehoert. letzte_daten ist beim Start genullt, sessions_valid also false,
+    // und damit stimmt die Anzeige schon vor der ersten Nutzlast.
+    if (current_screen == SCREEN_SESSIONS) {
+        // Nur beim Umschlagen neu aufbauen, nicht bei jedem Bild: LVGL
+        // verwirft bei jedem lv_label_set_text den Bereich, und ein Vollbild
+        // kostet auf dem C6 rund 120 ms (gemessen 2026-09-25). Die Frage
+        // selbst ist billig, das Neuzeichnen nicht.
+        if (sessionsdaten_frisch(&letzte_daten) == sessionseite_leer) {
+            update_sessions_screen(&letzte_daten);
+        }
+        if (sessionseite_leer) splash_mini_tick();
+        return;
+    }
+
     if (current_screen != SCREEN_USAGE) return;
     update_view_state();
-    if (view_state == 1) splash_mini_tick();   // animate the sleeping creature on the idle screen
+    if (view_state == 1) {
+        mini_kreatur_zeigen(idle_group, -20);  // zurueck, falls sie bei den Sessions war
+        splash_mini_tick();                    // animate the sleeping creature on the idle screen
+    }
 
     uint32_t now = lv_tick_get();
 
@@ -1483,8 +1530,6 @@ void ui_show_screen(screen_t screen) {
 
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
-    letzte_seitenaktion_ms = lv_tick_get();
-    letzte_seitenaktion_ms = lv_tick_get();
     apply_battery_visibility();
 }
 
