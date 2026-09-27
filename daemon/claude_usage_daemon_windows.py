@@ -27,6 +27,7 @@ from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 
 try:
+    from daemon import lokale_sessions
     from daemon.sessions_source import (
         PAYLOAD_LIMIT_GROSS,
         fetch_sessions,
@@ -36,6 +37,7 @@ try:
 except ImportError:
     # Running the script directly puts its own folder on sys.path, not the
     # repo root — the tray app and the tests import it the other way around.
+    import lokale_sessions
     from sessions_source import (
         PAYLOAD_LIMIT_GROSS,
         fetch_sessions,
@@ -265,10 +267,21 @@ async def add_session_fields_paar(payload: dict) -> tuple[dict, dict]:
     darauf zu verlassen, dass der grosse Weg ueberall funktioniert.
     """
     url, token = read_sessions_config(CONFIG_FILE)
-    if not url:
+    state = None
+    if url:
+        async with httpx.AsyncClient() as http:
+            state = await fetch_sessions(http, url, token)
+
+    # Die Sessions auf DIESEM Rechner kommen dazu. Timo, 2026-09-27: "ja das
+    # wäre top wenn die PC Session da auch mit drin ist." Sie werden in die
+    # Serverantwort eingehängt, nicht daneben gestellt — so laufen Kürzung,
+    # Budget und "+N more" unverändert durch den vorhandenen Weg.
+    #
+    # Das gilt auch ohne Serverzugang: Ist kein `sessions_url` eingetragen oder
+    # der Server nicht erreichbar, zeigt das Gerät wenigstens den eigenen PC.
+    state = lokale_sessions.ergaenze(state)
+    if state is None:
         return payload, payload
-    async with httpx.AsyncClient() as http:
-        state = await fetch_sessions(http, url, token)
     return (merge_into_payload(payload, state, PAYLOAD_LIMIT_GROSS),
             merge_into_payload(payload, state))
 
