@@ -277,8 +277,10 @@ async def add_session_fields_paar(payload: dict) -> tuple[dict, dict]:
     # Serverantwort eingehängt, nicht daneben gestellt — so laufen Kürzung,
     # Budget und "+N more" unverändert durch den vorhandenen Weg.
     #
-    # Das gilt auch ohne Serverzugang: Ist kein `sessions_url` eingetragen oder
-    # der Server nicht erreichbar, zeigt das Gerät wenigstens den eigenen PC.
+    # Nur zusammen mit einer Serverantwort. Ist kein `sessions_url` eingetragen
+    # oder der Server nicht erreichbar, gehen gar keine Sessionfelder raus, und
+    # das Gerät zeigt nach seiner Karenzzeit den Leerzustand. Timo, 2026-09-28:
+    # "nicht nur die lokale PC Session."
     state = lokale_sessions.ergaenze(state)
     if state is None:
         return payload, payload

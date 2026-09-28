@@ -847,7 +847,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
 }
 
 // Der letzte bekannte Stand gilt eine Weile weiter. Erst wenn laenger nichts
-// kam, ist "No session data" die Wahrheit statt eines Schreckens bei jedem
+// kam, ist "No data" die Wahrheit statt eines Schreckens bei jedem
 // Serverhaenger. Eigene Funktion, weil der Takt diese Frage beantworten muss,
 // ohne dafuer die halbe Seite neu zu schreiben.
 static bool sessionsdaten_frisch(const UsageData* d) {
@@ -883,11 +883,15 @@ static void update_sessions_screen(const UsageData* d) {
         // Genau sagen, was fehlt: ohne Funk ist es die Verbindung zum Rechner,
         // mit Funk der Server dahinter. Beides "No connection" zu nennen,
         // schickt bei der Fehlersuche in die falsche Richtung.
+        //
+        // "No data" statt "No session data": dasselbe Wort wie die Usage-Seite
+        // im selben Fall. Timo, 2026-09-28: "wenn keine Daten vom Server
+        // kommen, dann auch No Data anzeigen."
         if (lv_obj_get_parent(sess_hint_lbl) != sessions_container) {
             lv_obj_set_parent(sess_hint_lbl, sessions_container);
         }
         lv_label_set_text(sess_hint_lbl,
-                          s_ble_connected ? "No session data" : "No connection");
+                          s_ble_connected ? "No data" : "No connection");
         lv_obj_set_style_text_align(sess_hint_lbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_align(sess_hint_lbl, LV_ALIGN_CENTER, 0, mitte + L.idle_px / 2);
         lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);

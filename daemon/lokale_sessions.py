@@ -138,21 +138,26 @@ def ergaenze(daten: dict | None, lokale: list[dict] | None = None,
              jetzt: float | None = None) -> dict | None:
     """Hängt die lokalen Sessions an die Antwort des Servers.
 
-    Gibt ein NEUES Wörterbuch zurück; `daten` bleibt unangetastet. Ist der
-    Server nicht erreichbar (`daten` ist None), entsteht aus den lokalen
-    Sessions allein eine vollwertige Antwort — dann zeigt das Gerät wenigstens,
-    was auf dem eigenen Rechner läuft, statt "No session data".
+    Gibt ein NEUES Wörterbuch zurück; `daten` bleibt unangetastet.
+
+    Ohne Serverantwort (`daten` ist None) kommt None zurück — die lokalen
+    Sessions werden dann NICHT allein gezeigt. Timo, 2026-09-28: "wenn keine
+    Daten vom Server kommen, dann auch No Data anzeigen, wie als wenn nix
+    verbunden wäre. Und nicht nur die lokale PC Session." Eine Liste mit einer
+    einzigen Session sähe aus wie ein gültiger Stand ("Total 1") und wäre
+    keiner; der Leerzustand sagt ehrlich, dass der Server fehlt. Bis
+    2026-09-28 entstand hier aus den lokalen Sessions allein eine Antwort.
     """
+    if daten is None:
+        return None
+
     sessions_lokal = lies_lokale_sessions(jetzt=jetzt) if lokale is None else lokale
     if not sessions_lokal:
-        return daten if daten is None else dict(daten)
+        return dict(daten)
 
-    if daten is None:
-        sessions = list(sessions_lokal)
-    else:
-        vorhanden = daten.get("sessions")
-        sessions = (list(vorhanden) if isinstance(vorhanden, list) else []) \
-            + list(sessions_lokal)
+    vorhanden = daten.get("sessions")
+    sessions = (list(vorhanden) if isinstance(vorhanden, list) else []) \
+        + list(sessions_lokal)
 
     # Arbeitende zuerst, darunter die zuletzt gewechselten — dieselbe Reihenfolge
     # wie im Sammler, damit die Liste auf dem Gerät nicht je nach Quelle springt.
@@ -160,8 +165,7 @@ def ergaenze(daten: dict | None, lokale: list[dict] | None = None,
                                  s.get("seit_sekunden", 0),
                                  s.get("name", "")))
 
-    ergebnis = dict(daten) if daten else {"erzeugt_um": int(jetzt or time.time()),
-                                          "frisch": True, "alter_sekunden": 0}
+    ergebnis = dict(daten)
     ergebnis["sessions"] = sessions
     ergebnis["anzahl"] = {
         "wartet": sum(1 for s in sessions if s.get("zustand") == "wartet"),

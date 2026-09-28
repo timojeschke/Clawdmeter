@@ -90,18 +90,17 @@ def test_lokale_session_kommt_zur_serverantwort_dazu():
     assert server["anzahl"]["gesamt"] == 29
 
 
-def test_ohne_server_entsteht_eine_vollwertige_antwort():
-    """Der Server ist weg, der eigene PC arbeitet — das gehoert auf den Schirm.
+def test_ohne_server_wird_die_pc_session_nicht_allein_gezeigt():
+    """Kein Server, eine lokale Session: Das Geraet soll den Leerzustand zeigen.
 
-    Vorher zeigte das Geraet in diesem Fall "No session data", obwohl der
-    Daemon sehr wohl wusste, was auf dem Rechner laeuft, auf dem er selbst
-    ausgefuehrt wird.
+    Timo, 2026-09-28: "wenn keine Daten vom Server kommen, dann auch No Data
+    anzeigen, wie als wenn nix verbunden waere. Und nicht nur die lokale PC
+    Session." Eine Liste mit einer einzigen Session saehe aus wie ein gueltiger
+    Stand ("Total 1") und waere keiner.
     """
-    ergebnis = ergaenze(None, lokale=[
+    assert ergaenze(None, lokale=[
         {"name": "Timo-PC", "zustand": "arbeitet", "seit_sekunden": 3},
-    ])
-    assert ergebnis["anzahl"]["arbeitet"] == 1
-    assert ergebnis["frisch"] is True
+    ]) is None
 
 
 def test_ohne_lokale_sessions_bleibt_die_serverantwort_inhaltlich_gleich():
