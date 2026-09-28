@@ -903,6 +903,15 @@ static void update_sessions_screen(const UsageData* d) {
         lv_obj_align(mini_kreatur, LV_ALIGN_CENTER, 0, -20);
         lv_obj_add_flag(mini_kreatur, LV_OBJ_FLAG_HIDDEN);
     }
+    // Der Hinweis ebenso zurueck in die Karte. Der Leerzustand haengt ihn auf
+    // die ganze Seite um; blieb er dort, zentrierte sich "Nothing running"
+    // danach auf den BILDSCHIRM statt auf die Karte — und die Bildschirmmitte
+    // liegt genau an deren Oberkante. Traf jeden Start, weil das Geraet
+    // anfangs immer kurz ohne Sessiondaten ist. Timo, 2026-09-28: "das
+    // Nothing Running ist nicht zentriert im Block, das ist einfach ganz oben."
+    if (lv_obj_get_parent(sess_hint_lbl) != sess_list_panel) {
+        lv_obj_set_parent(sess_hint_lbl, sess_list_panel);
+    }
     lv_obj_clear_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
     // Total und Idle werden hier gerechnet, nicht gefunkt: Die Summe der drei
