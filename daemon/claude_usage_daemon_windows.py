@@ -698,7 +698,21 @@ def _windows_credential_candidates() -> list[Path]:
 
 
 def read_token() -> str | None:
-    """Read the Claude OAuth access token from the first available credential file."""
+    """Read the Claude OAuth access token.
+
+    CLAWDMETER_OAUTH_TOKEN wins when set: a long-lived token from
+    `claude setup-token`. Without it the daemon borrows Claude Code's own
+    short-lived access token, which Claude Code refreshes only when it makes a
+    request of its own. After the PC was switched off for twelve hours
+    (2026-09-29) that token had expired, and the device showed "No data" until
+    something happened to wake Claude Code — the daemon cannot refresh it
+    itself without risking Claude Code's own login (refresh tokens rotate).
+
+    A separate variable on purpose: CLAUDE_CODE_OAUTH_TOKEN would also switch
+    how Claude Code itself signs in on this machine.
+    """
+    if (eigenes := os.environ.get("CLAWDMETER_OAUTH_TOKEN", "").strip()):
+        return eigenes
     for path in _windows_credential_candidates():
         try:
             return _extract_access_token(path.read_text(encoding="utf-8"))
@@ -994,6 +1008,11 @@ async def main(tray_state=None) -> None:
 
     log("=== Claude Usage Tracker Daemon (BLE, Windows) ===")
     log(f"Poll interval: {POLL_INTERVAL}s")
+    # Only WHICH source, never the value — the log file is read by people and
+    # sessions alike.
+    log("Token source: " + ("CLAWDMETER_OAUTH_TOKEN (long-lived)"
+                            if os.environ.get("CLAWDMETER_OAUTH_TOKEN", "").strip()
+                            else "Claude Code credentials file"))
 
     # D-05: two distinct backoff regimes — slow-search (device absent) vs fast-reconnect (link dropped)
     search_backoff = 1     # caps at 60s — gentle, for a device that is genuinely absent/off

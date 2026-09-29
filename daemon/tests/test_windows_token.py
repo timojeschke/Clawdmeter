@@ -37,6 +37,26 @@ def test_read_token_env_override(tmp_path, monkeypatch):
     assert read_token() == "sk-ant-test-ENV"
 
 
+@pytest.mark.parametrize("eigenes, erwartet", [
+    ("sk-ant-oat-LANGLEBIG", "sk-ant-oat-LANGLEBIG"),  # eigenes Token gewinnt
+    ("   ", "sk-ant-test-DATEI"),                        # leer gesetzt: Datei
+])
+def test_clawdmeter_token_wins_over_claude_code_file(tmp_path, monkeypatch,
+                                                     eigenes, erwartet):
+    """Regression 2026-09-29: PC 12 h aus, Claude-Code-Token abgelaufen.
+
+    Der Clawdmeter zeigte "No data", bis zufaellig etwas Claude Code weckte.
+    Ein langlebiges Token aus `claude setup-token` in CLAWDMETER_OAUTH_TOKEN
+    macht den Daemon davon unabhaengig. Ein versehentlich leer gesetzter Wert
+    darf den Weg ueber die Datei aber nicht verbauen.
+    """
+    creds = tmp_path / ".credentials.json"
+    creds.write_text(json.dumps({"accessToken": "sk-ant-test-DATEI"}))
+    monkeypatch.setenv("CLAUDE_CREDENTIALS_PATH", str(creds))
+    monkeypatch.setenv("CLAWDMETER_OAUTH_TOKEN", eigenes)
+    assert read_token() == erwartet
+
+
 def test_read_token_primary_path(tmp_path, monkeypatch):
     """read_token() reads from the primary candidate path (first hit wins)."""
     creds = tmp_path / ".claude" / ".credentials.json"
