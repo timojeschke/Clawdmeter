@@ -12,6 +12,7 @@
 #include "idle.h"
 #include "idle_cfg.h"
 #include "brightness.h"
+#include "battery_runtime.h"
 
 #include "hal/board_caps.h"
 #include "hal/display_hal.h"
@@ -211,6 +212,24 @@ static void send_screenshot() {
 #endif
 }
 
+// Was das Geraet ueber seinen Akku denkt, in einer Zeile — damit sich ohne
+// Blick aufs Display auslesen laesst, warum eine Restlaufzeit so aussieht.
+static void print_akku_status() {
+    const uint32_t jetzt = lv_tick_get();
+    Serial.printf("akku: pct=%d charging=%d vbus=%d stufe=%d asleep=%d "
+                  "anker_pct=%d anker_alter_s=%lu "
+                  "raten_ms=[%lu,%lu,%lu,%lu] angezeigt_min=%d\n",
+                  power_hal_battery_pct(), power_hal_is_charging(),
+                  power_hal_is_vbus_in(), brightness_get_stage(), idle_is_asleep(),
+                  battery_runtime_anker_pct(),
+                  (unsigned long)(battery_runtime_anker_alter_ms(jetzt) / 1000u),
+                  (unsigned long)battery_runtime_rate(0),
+                  (unsigned long)battery_runtime_rate(1),
+                  (unsigned long)battery_runtime_rate(2),
+                  (unsigned long)battery_runtime_rate(3),
+                  battery_runtime_minutes());
+}
+
 static void check_serial_cmd() {
     while (Serial.available()) {
         char c = Serial.read();
@@ -218,6 +237,7 @@ static void check_serial_cmd() {
             cmd_buf[cmd_pos] = '\0';
             if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
             else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
+            else if (strcmp(cmd_buf, "akku") == 0)  print_akku_status();
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;
@@ -358,7 +378,8 @@ void setup() {
 
     ui_init();
     ui_update_ble_status(ble_get_state(), ble_get_device_name(), ble_get_mac_address());
-    ui_update_battery(power_hal_battery_pct(), power_hal_is_charging());
+    ui_update_battery(power_hal_battery_pct(), power_hal_is_charging(),
+                      power_hal_is_vbus_in());
     ui_show_screen(SCREEN_SESSIONS);
 
     Serial.printf("Dashboard ready (%s, %dx%d), waiting for data on BLE...\n",
@@ -469,15 +490,28 @@ void loop() {
         ui_update_ble_status(bs, ble_get_device_name(), ble_get_mac_address());
     }
 
+    // Der Schaetzer muss von jedem Wechsel erfahren, der den Verbrauch aendert —
+    // nicht nur von Prozentwechseln: Kabel (auch ohne Laden, wenn der Akku voll
+    // ist), dunkler Bildschirm und Helligkeitsstufe setzen sein Messfenster zurueck.
     static int  last_pct      = -2;
     static bool last_charging = false;
+    static bool last_vbus     = false;
+    static bool last_asleep   = false;
+    static int  last_stage    = -1;
     int  pct      = power_hal_battery_pct();
     bool charging = power_hal_is_charging();
-    if (pct != last_pct || charging != last_charging) {
+    bool vbus     = power_hal_is_vbus_in();
+    bool asleep   = idle_is_asleep();
+    int  stage    = brightness_get_stage();
+    if (pct != last_pct || charging != last_charging || vbus != last_vbus ||
+        asleep != last_asleep || stage != last_stage) {
         if (pct != last_pct) ble_set_battery_level(pct);
         last_pct = pct;
         last_charging = charging;
-        ui_update_battery(pct, charging);
+        last_vbus = vbus;
+        last_asleep = asleep;
+        last_stage = stage;
+        ui_update_battery(pct, charging, vbus);
     }
 
     check_serial_cmd();

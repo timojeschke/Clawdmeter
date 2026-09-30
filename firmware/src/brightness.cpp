@@ -37,3 +37,7 @@ void brightness_cycle(void) {
 uint8_t brightness_get(void) {
     return LEVELS[cur_idx];
 }
+
+uint8_t brightness_get_stage(void) {
+    return cur_idx;
+}

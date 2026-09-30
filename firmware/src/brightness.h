@@ -8,3 +8,6 @@
 void    brightness_init(void);    // load saved level from NVS and apply
 void    brightness_cycle(void);   // advance to next level, save, apply
 uint8_t brightness_get(void);     // current PWM level (0..255)
+// Index der aktuellen Stufe (0 = dunkelste). Der Akku-Schaetzer fuehrt je Stufe
+// eine eigene Verbrauchsrate, siehe battery_runtime.h.
+uint8_t brightness_get_stage(void);
