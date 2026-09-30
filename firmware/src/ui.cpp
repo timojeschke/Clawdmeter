@@ -1378,7 +1378,9 @@ static screen_t prev_non_splash_screen = SCREEN_USAGE;
 //
 // Der fruehere Einzelschluessel "battrate" wird nicht mehr gelesen: Er wurde
 // auch am Kabel bei vollem Akku (PMU meldet dort "laedt nicht") gemessen und
-// ist deshalb vermutlich verfaelscht. Er wird beim Start einmalig entfernt.
+// ist verfaelscht: Der NVS-Auszug vom 2026-09-30 zeigte 5846863 ms/%, rund 54-mal
+// die Annahme. Das remove laeuft bei jedem Start und ist ohne den Schluessel
+// wirkungslos.
 static const char* const RATE_SCHLUESSEL[BATTERY_RUNTIME_STAGES] = {
     "battrate0", "battrate1", "battrate2", "battrate3"
 };
@@ -1634,8 +1636,9 @@ void ui_update_battery(int percent, bool charging, bool vbus_in) {
             lv_label_set_text(battery_sub_lbl, LV_SYMBOL_CHARGE " Charging");
         } else if (vbus_in) {
             // Kabel steckt, Akku ist voll: keine Zahl, denn es wird nichts
-            // verbraucht, was man hochrechnen koennte.
-            lv_label_set_text(battery_sub_lbl, LV_SYMBOL_CHARGE " Plugged in");
+            // verbraucht, was man hochrechnen koennte. "On USB" statt
+            // "Plugged in": das ragte auf 480 px ueber den 20-px-Rand.
+            lv_label_set_text(battery_sub_lbl, LV_SYMBOL_CHARGE " On USB");
         } else if (rest >= 0) {
             // Rounded to the coarseness the estimate deserves: a drain slope
             // from a whole-percent reading cannot justify single minutes.

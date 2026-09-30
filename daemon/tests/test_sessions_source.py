@@ -151,6 +151,19 @@ def test_hintergrund_namen_stehen_nach_den_arbeitenden():
     assert r["sn"] == ["A", "B", "C", "D"]
 
 
+def test_arbeitende_ohne_namen_verschieben_die_dimmgrenze_nicht():
+    # Das Geraet dimmt ab Eintrag `sa`. Fiele ein leerer Name weg, stuende der
+    # erste Hintergrund-Name hell da, als arbeite er.
+    r = merge_into_payload(BASIS, _stand(["A", "  "], hintergrund=["C"]))
+    assert r["sn"][r["sa"]] == "C"
+
+
+def test_alter_sammler_ohne_hintergrund_liefert_null():
+    stand = _stand(["A"])
+    del stand["anzahl"]["hintergrund"]
+    assert merge_into_payload(BASIS, stand)["sb"] == 0
+
+
 def test_beim_kuerzen_fallen_hintergrund_namen_zuerst_weg():
     # Reales Byte-Budget: sehr viele Namen sprengen es. Weil die Liste immer
     # von hinten gekuerzt wird und Hintergrund-Namen hinten stehen, muss der

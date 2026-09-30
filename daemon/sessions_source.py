@@ -152,9 +152,9 @@ def _laufende_namen(daten: dict) -> list[str]:
     for s in sessions:
         if not isinstance(s, dict):
             continue
-        name = str(s.get("name", "")).strip()
-        if not name:
-            continue
+        # Ein leerer Name bekommt einen Platzhalter statt zu fehlen: Das Geraet
+        # dimmt ab Eintrag `sa`, jede Luecke verschoebe diese Grenze.
+        name = str(s.get("name", "")).strip() or "(unnamed)"
         if s.get("zustand") == "arbeitet":
             arbeitet.append(name)
         elif s.get("zustand") == "hintergrund":

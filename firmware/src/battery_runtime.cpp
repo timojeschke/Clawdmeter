@@ -136,15 +136,17 @@ void battery_runtime_sample(int percent, bool charging, bool vbus_in,
     minuten = (int)(rest_ms / 60000u);
 }
 
-// Rate der Stufe, sonst die der naechstgelegenen Stufe mit bekannter Rate
-// (bei gleichem Abstand die dunklere), sonst 0.
+// Rate der Stufe, sonst die der naechstgelegenen Stufe mit bekannter Rate,
+// sonst 0. Bei gleichem Abstand die hellere: Sie verbraucht mehr, die Zahl
+// faellt also eher zu kurz als zu lang aus — eine zu optimistische
+// Restlaufzeit ist die schlimmere Luege.
 static uint32_t rate_mit_rueckfall(int stage) {
     if (raten_ms[stage] != 0) return raten_ms[stage];
     for (int abstand = 1; abstand < BATTERY_RUNTIME_STAGES; abstand++) {
         const int unten = stage - abstand;
         const int oben  = stage + abstand;
-        if (unten >= 0 && raten_ms[unten] != 0) return raten_ms[unten];
         if (oben < BATTERY_RUNTIME_STAGES && raten_ms[oben] != 0) return raten_ms[oben];
+        if (unten >= 0 && raten_ms[unten] != 0) return raten_ms[unten];
     }
     return 0;
 }

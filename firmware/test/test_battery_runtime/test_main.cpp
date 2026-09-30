@@ -156,21 +156,21 @@ int main() {
     }
 
     // --- Ein Fenster ueber den Stufenwechsel hinweg wird nicht gemessen -----
-    // Ohne Zuruecksetzen ergaebe sich aus 20 % in 60 min eine Mischrate von
-    // 180000 fuer Stufe 0 — hier gilt sie nur fuer das, was auf Stufe 3 lief.
+    // Ohne Zuruecksetzen ergaebe sich aus 20 % in 45 min die Mischrate 135000
+    // — gemessen wird nur, was auf Stufe 3 lief: 10 % in 15 min.
     frisch();
     entlaedt(100, 0, 0);
     entlaedt(90, 30 * MINUTE, 3);                    // Wechsel
-    entlaedt(80, 60 * MINUTE, 3);                    // 10 % in 30 min auf Stufe 3
-    CHECK(battery_runtime_rate(3) == 180000u);
+    entlaedt(80, 45 * MINUTE, 3);
+    CHECK(battery_runtime_rate(3) == 90000u);
     CHECK(battery_runtime_rate(0) == 0);
 
     // --- Rueckfall auf die naechstgelegene Stufe mit bekannter Rate ---------
     frisch();
     battery_runtime_set_rate(1, 120000);
     battery_runtime_set_rate(3, 60000);
-    entlaedt(50, 0, 2);                              // 1 und 3 gleich weit: die dunklere
-    CHECK(battery_runtime_minutes() == 100);         // 120000 ms/% mal 50 %
+    entlaedt(50, 0, 2);                              // 1 und 3 gleich weit: die hellere
+    CHECK(battery_runtime_minutes() == 50);          // 60000 ms/% mal 50 %
     entlaedt(50, 0, 3);                              // eigene Rate
     CHECK(battery_runtime_minutes() == 50);          // 60000 ms/% mal 50 %
     entlaedt(50, 0, 0);                              // naechste bekannte: Stufe 1
