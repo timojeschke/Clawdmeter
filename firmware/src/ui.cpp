@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "splash.h"
 #include "brightness.h"
+#include "idle.h"
 #include <Preferences.h>
 #include "battery_runtime.h"
 #include <lvgl.h>
@@ -1356,31 +1357,52 @@ void ui_tick_anim(void) {
 }
 
 static screen_t prev_non_splash_screen = SCREEN_USAGE;
-// Die gemessene Verbrauchsrate ueberlebt Neustart und Kabel, indem sie im
-// NVS liegt — derselbe Bereich wie die Helligkeit. Geschrieben wird nur, wenn
-// sie sich geaendert hat: Flash hat endlich viele Schreibzyklen, und die Rate
-// aendert sich hoechstens alle paar Minuten.
-#define RATE_SCHLUESSEL "battrate"
+// Die gemessenen Verbrauchsraten ueberleben Neustart und Kabel, indem sie im
+// NVS liegen — derselbe Bereich wie die Helligkeit. Je Helligkeitsstufe ein
+// Schluessel, weil der Bildschirm der groesste Verbraucher ist. Geschrieben wird
+// nur bei einer neuen Messung: Flash hat endlich viele Schreibzyklen, und eine
+// Rate aendert sich hoechstens alle paar Minuten.
+//
+// Der fruehere Einzelschluessel "battrate" wird nicht mehr gelesen: Er wurde
+// auch am Kabel bei vollem Akku (PMU meldet dort "laedt nicht") gemessen und
+// ist deshalb vermutlich verfaelscht. Er wird beim Start einmalig entfernt.
+static const char* const RATE_SCHLUESSEL[BATTERY_RUNTIME_STAGES] = {
+    "battrate0", "battrate1", "battrate2", "battrate3"
+};
+#define RATE_SCHLUESSEL_ALT "battrate"
 
-static uint32_t rate_zuletzt_gesichert = 0;
+static uint32_t rate_zuletzt_gesichert[BATTERY_RUNTIME_STAGES] = {0, 0, 0, 0};
 
 static void rate_laden(void) {
     Preferences prefs;
-    prefs.begin("clawdmeter", true);
-    const uint32_t rate = prefs.getULong(RATE_SCHLUESSEL, 0);
+    prefs.begin("clawdmeter", false);
+    for (int i = 0; i < BATTERY_RUNTIME_STAGES; i++) {
+        const uint32_t rate = prefs.getULong(RATE_SCHLUESSEL[i], 0);
+        battery_runtime_set_rate(i, rate);
+        rate_zuletzt_gesichert[i] = rate;
+    }
+    prefs.remove(RATE_SCHLUESSEL_ALT);   // fehlt der Schluessel, ist das folgenlos
     prefs.end();
-    battery_runtime_set_rate(rate);
-    rate_zuletzt_gesichert = rate;
 }
 
+// Meldet der Schaetzer eine frische Messung, wird sie protokolliert und die
+// betroffene Stufe gesichert. Serial ist die einzige Stelle, an der man von
+// aussen sieht, was das Geraet gemessen hat.
 static void rate_sichern_wenn_geaendert(void) {
-    const uint32_t rate = battery_runtime_rate();
-    if (rate == 0 || rate == rate_zuletzt_gesichert) return;
+    int      stufe;
+    uint32_t rate, spanne_ms;
+    int      abfall;
+    if (!battery_runtime_neue_messung(&stufe, &rate, &spanne_ms, &abfall)) return;
+
+    Serial.printf("Akku-Rate gemessen: Stufe %d, %lu ms/%%, Spanne %lu ms, Abfall %d %%\n",
+                  stufe, (unsigned long)rate, (unsigned long)spanne_ms, abfall);
+
+    if (rate == rate_zuletzt_gesichert[stufe]) return;
     Preferences prefs;
     prefs.begin("clawdmeter", false);
-    prefs.putULong(RATE_SCHLUESSEL, rate);
+    prefs.putULong(RATE_SCHLUESSEL[stufe], rate);
     prefs.end();
-    rate_zuletzt_gesichert = rate;
+    rate_zuletzt_gesichert[stufe] = rate;
 }
 
 static void apply_battery_visibility(void) {
@@ -1568,7 +1590,7 @@ void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) 
     update_view_state();
 }
 
-void ui_update_battery(int percent, bool charging) {
+void ui_update_battery(int percent, bool charging, bool vbus_in) {
     if (!battery_body) return;
 
     const int16_t innen = L.batt_w - 2 * BATT_BORDER_W;
@@ -1587,12 +1609,20 @@ void ui_update_battery(int percent, bool charging) {
     else if (pct <= BATT_LOW_PCT) farbe = THEME_RED;
     lv_obj_set_style_bg_color(battery_fill, farbe, 0);
 
-    battery_runtime_sample(percent, charging, lv_tick_get());
+    // Bildschirm und Helligkeitsstufe liest der Schaetzer hier selbst ein: Sie
+    // aendern den Verbrauch genauso wie das Kabel, und main.cpp ruft diese
+    // Funktion bei jedem ihrer Wechsel auf.
+    battery_runtime_sample(percent, charging, vbus_in, idle_is_asleep(),
+                           brightness_get_stage(), lv_tick_get());
     rate_sichern_wenn_geaendert();
     if (battery_sub_lbl) {
         const int rest = battery_runtime_minutes();
         if (charging) {
             lv_label_set_text(battery_sub_lbl, LV_SYMBOL_CHARGE " Charging");
+        } else if (vbus_in) {
+            // Kabel steckt, Akku ist voll: keine Zahl, denn es wird nichts
+            // verbraucht, was man hochrechnen koennte.
+            lv_label_set_text(battery_sub_lbl, LV_SYMBOL_CHARGE " Plugged in");
         } else if (rest >= 0) {
             // Rounded to the coarseness the estimate deserves: a drain slope
             // from a whole-percent reading cannot justify single minutes.

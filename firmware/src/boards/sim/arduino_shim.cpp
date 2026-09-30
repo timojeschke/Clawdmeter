@@ -53,6 +53,12 @@ size_t Preferences::putULong(const char* key, uint32_t value) {
     return 0;
 }
 
+bool Preferences::remove(const char* key) {
+    for (auto& s : store32)
+        if (s.used && strcmp(s.key, key) == 0) { s.used = false; return true; }
+    return false;
+}
+
 uint8_t Preferences::getUChar(const char* key, uint8_t def) {
     for (auto& s : store)
         if (s.used && strcmp(s.key, key) == 0) return s.val;
