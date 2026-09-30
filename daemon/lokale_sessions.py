@@ -28,13 +28,20 @@ log = logging.getLogger(__name__)
 # Dieselbe Abbildung wie im Sammler auf dem Server
 # (`collector/sammle-sessions.py`).
 #
-# `shell` ist KEINE Arbeit: Die Antwort ist fertig, nur ein Hintergrundprozess
-# lebt noch. Eine Session, die im Vordergrund einen Befehl ausführt, meldet
-# `busy` — gemessen am 2026-09-27, nachdem das Gerät eine seit 37 Minuten
-# fertige Session als laufend zeigte.
+# `shell` ist KEINE Arbeit im Vordergrund: Die Antwort ist fertig, nur ein
+# Hintergrundprozess lebt noch (Agent, Render, Messlauf). Eine Session, die im
+# Vordergrund einen Befehl ausführt, meldet `busy` — gemessen am 2026-09-27,
+# nachdem das Gerät eine seit 37 Minuten fertige Session als laufend zeigte.
+#
+# Bis 2026-09-27 zählte `shell` deshalb wie `idle` — als "geparkt", nicht als
+# laufend. Timo, 2026-09-30: "manchmal haben diese Sessions auf den Servern ja
+# auch Hintergrundaufgaben, stehen dann aber nicht mehr auf running. Können
+# wir das auch fixen?" `shell` bekommt jetzt einen eigenen Zustand
+# ("hintergrund"), sichtbar abgesetzt von "arbeitet", aber weiterhin als
+# laufend gezählt statt als geparkt.
 ZUSTAND_ABBILDUNG = {
     "busy": "arbeitet",
-    "shell": None,
+    "shell": "hintergrund",
     "waiting": "wartet",
     "idle": None,
 }
@@ -159,9 +166,11 @@ def ergaenze(daten: dict | None, lokale: list[dict] | None = None,
     sessions = (list(vorhanden) if isinstance(vorhanden, list) else []) \
         + list(sessions_lokal)
 
-    # Arbeitende zuerst, darunter die zuletzt gewechselten — dieselbe Reihenfolge
-    # wie im Sammler, damit die Liste auf dem Gerät nicht je nach Quelle springt.
-    sessions.sort(key=lambda s: (s.get("zustand") != "arbeitet",
+    # Arbeitende zuerst, dann Hintergrund, darunter die zuletzt gewechselten —
+    # dieselbe Reihenfolge wie im Sammler, damit die Liste auf dem Gerät nicht
+    # je nach Quelle springt.
+    RANG = {"arbeitet": 0, "hintergrund": 1}
+    sessions.sort(key=lambda s: (RANG.get(s.get("zustand"), 2),
                                  s.get("seit_sekunden", 0),
                                  s.get("name", "")))
 
@@ -170,6 +179,7 @@ def ergaenze(daten: dict | None, lokale: list[dict] | None = None,
     ergebnis["anzahl"] = {
         "wartet": sum(1 for s in sessions if s.get("zustand") == "wartet"),
         "arbeitet": sum(1 for s in sessions if s.get("zustand") == "arbeitet"),
+        "hintergrund": sum(1 for s in sessions if s.get("zustand") == "hintergrund"),
         "geparkt": sum(1 for s in sessions if s.get("zustand") == "geparkt"),
         "gesamt": len(sessions),
     }

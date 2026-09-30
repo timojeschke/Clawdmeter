@@ -126,8 +126,8 @@ async def fetch_sessions(http_client, url: str, token: str) -> dict | None:
     return daten
 
 
-def _waiting_names(daten: dict) -> list[str]:
-    """Namen der Sessions, die gerade rechnen.
+def _laufende_namen(daten: dict) -> list[str]:
+    """Namen der laufenden Sessions — erst die arbeitenden, dann die im Hintergrund.
 
     Timo, 2026-09-25: "anstatt waiting for input listest du einfach alle
     running sessions auf, das geht leichter."
@@ -136,17 +136,30 @@ def _waiting_names(daten: dict) -> list[str]:
     trennscharfer Zustand — die App nennt JEDE untaetige Session so, und bei
     29 Sessions sind das fast alle. "Laeuft gerade" ist dagegen eindeutig: Der
     Zustand kommt direkt aus Claude Code und ist entweder wahr oder nicht.
+
+    Timo, 2026-09-30: "manchmal haben diese Sessions auf den Servern ja auch
+    Hintergrundaufgaben, stehen dann aber nicht mehr auf running. Koennen wir
+    das auch fixen?" Seitdem zaehlt "hintergrund" (Status `shell`: Antwort
+    fertig, ein Hintergrundprozess laeuft noch) ebenfalls als laufend, aber
+    nachrangig — die Reihenfolge bestimmt, welche Namen beim Kuerzen zuerst
+    wegfallen (siehe merge_into_payload), und da sollen die wirklich
+    arbeitenden Sessions den Vorrang behalten.
     """
     sessions = daten.get("sessions")
     if not isinstance(sessions, list):
         return []
-    roh = []
+    arbeitet, hintergrund = [], []
     for s in sessions:
-        if isinstance(s, dict) and s.get("zustand") == "arbeitet":
-            name = str(s.get("name", "")).strip()
-            if name:
-                roh.append(name)
-    return roh
+        if not isinstance(s, dict):
+            continue
+        name = str(s.get("name", "")).strip()
+        if not name:
+            continue
+        if s.get("zustand") == "arbeitet":
+            arbeitet.append(name)
+        elif s.get("zustand") == "hintergrund":
+            hintergrund.append(name)
+    return arbeitet + hintergrund
 
 
 def _kuerzen(name: str, grenze: int) -> str:
@@ -205,9 +218,10 @@ def merge_into_payload(payload: dict, daten: dict | None,
     costs the device its usage numbers.
 
     Field names are short because every byte competes with the usage data:
-      sw  waiting count      sa  working count (die Namen gehoeren hierzu)
-      sg  parked count       sn  waiting names, as many as fit
-      sx  names dropped for space
+      sw  waiting count      sa  working count
+      sb  background count   sg  parked count   (sa+sb sind die "Namen")
+      sn  running names — working first, then background, as many as fit
+      sx  names dropped for space (or sa+sb when the data is stale)
     """
     if daten is None:
         return dict(payload)
@@ -222,6 +236,7 @@ def merge_into_payload(payload: dict, daten: dict | None,
     merged = dict(payload)
     merged["sw"] = int(anzahl.get("wartet", 0))
     merged["sa"] = int(anzahl.get("arbeitet", 0))
+    merged["sb"] = int(anzahl.get("hintergrund", 0))
     merged["sg"] = int(anzahl.get("geparkt", 0))
 
     # Stale data: counts are still roughly right, a name list is not. Showing
@@ -229,11 +244,12 @@ def merge_into_payload(payload: dict, daten: dict | None,
     # the wrong window.
     if veraltet or not daten.get("frisch", True):
         # Die verschwiegenen Namen sind die LAUFENDEN — seit dem 2026-09-25
-        # zeigt das Geraet die, nicht die wartenden.
-        merged["sx"] = merged["sa"]
+        # zeigt das Geraet die, nicht die wartenden; seit dem 2026-09-30
+        # zaehlen die Hintergrund-Sessions mit dazu.
+        merged["sx"] = merged["sa"] + merged["sb"]
         return merged
 
-    namen = _waiting_names(daten)
+    namen = _laufende_namen(daten)
     if not namen:
         return merged
 

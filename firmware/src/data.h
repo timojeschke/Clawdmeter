@@ -40,6 +40,7 @@ struct UsageData {
     bool sessions_valid;
     int  sessions_waiting;   // finished a turn, waiting for input
     int  sessions_working;   // busy right now
+    int  sessions_background; // reply done, a background task still runs (Claude Code status "shell")
     int  sessions_parked;    // idle for a long while
     // Names of waiting sessions, as many as fit the 512-byte BLE payload.
     // sessions_hidden counts those left out — the screen shows "+N more"

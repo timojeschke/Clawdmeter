@@ -40,7 +40,7 @@ def tote_pid():
 
 @pytest.mark.parametrize("status, erwartet", [
     ("busy", "arbeitet"),
-    ("shell", "geparkt"),      # fertig, nur ein Hintergrundprozess lebt (2026-09-27)
+    ("shell", "hintergrund"),   # Antwort fertig, Hintergrundprozess laeuft noch (2026-09-30)
     ("waiting", "wartet"),
     ("idle", "geparkt"),
     ("etwas neues", "geparkt"),  # unbekannter Wert darf nichts behaupten
@@ -82,12 +82,27 @@ def test_lokale_session_kommt_zur_serverantwort_dazu():
         {"name": "Timo-PC", "zustand": "arbeitet", "seit_sekunden": 1},
     ])
 
-    assert ergebnis["anzahl"] == {"wartet": 1, "arbeitet": 2,
+    assert ergebnis["anzahl"] == {"wartet": 1, "arbeitet": 2, "hintergrund": 0,
                                   "geparkt": 0, "gesamt": 3}
     assert [s["name"] for s in ergebnis["sessions"]][:2] == [
         "Timo-PC", "Privat - Clawdmeter"]
     # Die Serverantwort selbst bleibt unangetastet — der Aufrufer haelt sie noch.
     assert server["anzahl"]["gesamt"] == 29
+
+
+def test_hintergrund_wird_gezaehlt_und_steht_nach_den_arbeitenden():
+    server = {
+        "anzahl": {"wartet": 0, "arbeitet": 0, "hintergrund": 0,
+                   "geparkt": 1, "gesamt": 1},
+        "sessions": [{"name": "Alt", "zustand": "geparkt", "seit_sekunden": 1}],
+    }
+    ergebnis = ergaenze(server, lokale=[
+        {"name": "Render", "zustand": "hintergrund", "seit_sekunden": 1},
+        {"name": "Rechnet", "zustand": "arbeitet", "seit_sekunden": 900},
+    ])
+    assert [s["name"] for s in ergebnis["sessions"]] == ["Rechnet", "Render", "Alt"]
+    assert ergebnis["anzahl"]["hintergrund"] == 1
+    assert ergebnis["anzahl"]["gesamt"] == 3
 
 
 def test_ohne_server_wird_die_pc_session_nicht_allein_gezeigt():

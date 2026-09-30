@@ -919,17 +919,22 @@ static void update_sessions_screen(const UsageData* d) {
     }
     lv_obj_clear_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
-    // Total und Idle werden hier gerechnet, nicht gefunkt: Die Summe der drei
+    // Total und Idle werden hier gerechnet, nicht gefunkt: Die Summe der VIER
     // gefunkten Zahlen IST die Gesamtzahl offener Sessions, und "untaetig" ist
-    // genau das, was nicht arbeitet. Zwei zusaetzliche Felder auf der Leitung
-    // waeren dieselbe Information zum Preis von Namen in der Liste — der
-    // Schreibvorgang ist auf 244 Byte begrenzt.
+    // genau das, was weder arbeitet noch im Hintergrund laeuft. Zusaetzliche
+    // Felder auf der Leitung waeren dieselbe Information zum Preis von Namen
+    // in der Liste — der Schreibvorgang ist auf 244 Byte begrenzt.
+    //
+    // "Running" zaehlt Arbeitende UND Hintergrund-Sessions zusammen. Timo,
+    // 2026-09-30: Sessions mit Hintergrundaufgaben sollen als laufend
+    // zaehlen, aber in der Namensliste sichtbar abgesetzt bleiben (gedimmt) —
+    // siehe die Farbwahl unten.
     const int gesamt = d->sessions_waiting + d->sessions_working
-                     + d->sessions_parked;
+                     + d->sessions_parked + d->sessions_background;
+    const int laufend = d->sessions_working + d->sessions_background;
     lv_label_set_text_fmt(sess_count_lbl[0], "%d", gesamt);
-    lv_label_set_text_fmt(sess_count_lbl[1], "%d", d->sessions_working);
-    lv_label_set_text_fmt(sess_count_lbl[2], "%d",
-                          gesamt - d->sessions_working);
+    lv_label_set_text_fmt(sess_count_lbl[1], "%d", laufend);
+    lv_label_set_text_fmt(sess_count_lbl[2], "%d", gesamt - laufend);
 
     // Was nicht auf den Schirm passt, wird gezaehlt statt abgeschnitten —
     // sonst behauptet die Liste Vollstaendigkeit, die sie nicht hat.
@@ -937,9 +942,17 @@ static void update_sessions_screen(const UsageData* d) {
                         ? d->sessions_name_count : sess_max_zeilen;
     const int zusaetzlich_verborgen = d->sessions_name_count - gezeigt;
 
+    // Die Namen kommen bereits geordnet an — erst die arbeitenden, dann die im
+    // Hintergrund (sessions_source.py::_laufende_namen). Eintrag i gehoert
+    // also genau dann zum Hintergrund, wenn i >= sessions_working. Die Farbe
+    // wird bei JEDEM Update neu gesetzt, nicht nur beim Aufbau: Die Etiketten
+    // werden wiederverwendet, und ohne das wuerde ein Name, der von
+    // Hintergrund zu arbeitend wechselt, gedimmt stehen bleiben.
     for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
         if (i < gezeigt) {
             lv_label_set_text(sess_name_lbl[i], d->sessions_names[i]);
+            lv_obj_set_style_text_color(sess_name_lbl[i],
+                i >= d->sessions_working ? COL_DIM : COL_TEXT, 0);
             lv_obj_clear_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
