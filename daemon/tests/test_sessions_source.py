@@ -23,12 +23,16 @@ from daemon.sessions_source import (
 BASIS = {"s": 42, "sr": 180, "w": 17, "wr": 8820, "st": "active", "ok": True}
 
 
-def _stand(namen, wartend=1, geparkt=20, frisch=True, alter=4):
+def _stand(namen, wartend=1, geparkt=20, frisch=True, alter=4, hintergrund=()):
     """Ein Serverstand, in dem `namen` die LAUFENDEN Sessions sind.
 
     Seit dem 2026-09-25 zeigt das Geraet die laufenden statt der wartenden —
     "wartet auf Eingabe" ist bei Claude Code kein trennscharfer Zustand, weil
     die App jede untaetige Session so nennt.
+
+    `hintergrund` sind zusaetzliche laufende Sessions im Zustand "hintergrund"
+    (Status `shell` beim Sammler) — seit 2026-09-30 zaehlen sie als laufend,
+    aber nachrangig zu `namen`.
     """
     return {
         "erzeugt_um": 1790000000,
@@ -37,10 +41,12 @@ def _stand(namen, wartend=1, geparkt=20, frisch=True, alter=4):
         "anzahl": {
             "wartet": wartend,
             "arbeitet": len(namen),
+            "hintergrund": len(hintergrund),
             "geparkt": geparkt,
-            "gesamt": len(namen) + wartend + geparkt,
+            "gesamt": len(namen) + len(hintergrund) + wartend + geparkt,
         },
         "sessions": [{"name": n, "zustand": "arbeitet"} for n in namen]
+        + [{"name": n, "zustand": "hintergrund"} for n in hintergrund]
         + [{"name": "wartet gerade", "zustand": "wartet"}],
     }
 
@@ -130,7 +136,32 @@ def test_die_uebergebene_nutzlast_wird_nicht_veraendert():
 
 def test_zahlen_kommen_mit():
     r = merge_into_payload(BASIS, _stand(["A", "B"]))
-    assert (r["sw"], r["sa"], r["sg"]) == (1, 2, 20)
+    assert (r["sw"], r["sa"], r["sb"], r["sg"]) == (1, 2, 0, 20)
+
+
+def test_hintergrund_zahl_kommt_mit():
+    # Timo, 2026-09-30: Sessions mit Hintergrundaufgaben (Status "shell")
+    # sollen als laufend zaehlen, aber getrennt von "arbeitet" gezaehlt werden.
+    r = merge_into_payload(BASIS, _stand(["A"], hintergrund=["B", "C"]))
+    assert (r["sa"], r["sb"]) == (1, 2)
+
+
+def test_hintergrund_namen_stehen_nach_den_arbeitenden():
+    r = merge_into_payload(BASIS, _stand(["A", "B"], hintergrund=["C", "D"]))
+    assert r["sn"] == ["A", "B", "C", "D"]
+
+
+def test_beim_kuerzen_fallen_hintergrund_namen_zuerst_weg():
+    # Reales Byte-Budget: sehr viele Namen sprengen es. Weil die Liste immer
+    # von hinten gekuerzt wird und Hintergrund-Namen hinten stehen, muss der
+    # erste (arbeitende) Name in jedem Fall durchkommen.
+    viele_hintergrund = [f"Hintergrund Projekt {i} mit langem Namen" for i in range(20)]
+    r = merge_into_payload(BASIS, _stand(["Wichtigste Arbeit gerade eben"],
+                                         hintergrund=viele_hintergrund))
+    gesamt = len(viele_hintergrund) + 1
+    assert r["sn"][0].startswith("Wichtigste")   # ggf. gekuerzt, aber da
+    assert r["sx"] == gesamt - len(r["sn"])
+    assert r["sx"] > 0  # der reale Fall: nicht alles passt
 
 
 def test_kurze_liste_kommt_vollstaendig_durch():
@@ -175,6 +206,13 @@ def test_veralteter_stand_liefert_zahlen_ohne_namen():
     r = merge_into_payload(BASIS, _stand(["A", "B"], frisch=False, alter=600))
     assert "sn" not in r
     assert r["sa"] == 2 and r["sx"] == 2
+
+
+def test_veralteter_stand_zaehlt_hintergrund_mit_in_sx():
+    r = merge_into_payload(BASIS, _stand(["A"], hintergrund=["B", "C"],
+                                         frisch=False, alter=600))
+    assert "sn" not in r
+    assert r["sx"] == r["sa"] + r["sb"] == 3
 
 
 def test_ohne_laufende_keine_namensliste():
@@ -344,9 +382,9 @@ def test_zu_lange_namen_werden_hinten_gekuerzt(roh, grenze, erwartet):
 # --- Zwei Namen duerfen nie gleich aussehen --------------------------------
 
 def _namen(*roh):
-    from daemon.sessions_source import _waiting_names
-    return _waiting_names({"sessions": [{"zustand": "wartet", "name": n}
-                                        for n in roh]})
+    from daemon.sessions_source import _laufende_namen
+    return _laufende_namen({"sessions": [{"zustand": "arbeitet", "name": n}
+                                         for n in roh]})
 
 
 def test_gleich_aussehende_namen_werden_nicht_gezeigt():

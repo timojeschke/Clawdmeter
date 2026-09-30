@@ -147,6 +147,9 @@ static bool parse_json(const char* json, UsageData* out) {
         out->sessions_last_ms = millis();
         out->sessions_waiting = doc["sw"] | 0;
         out->sessions_working = doc["sa"] | 0;
+        // "sb" fehlt bei einem aelteren Daemon ohne Hintergrund-Zustand — dann
+        // einfach 0, wie jedes andere optionale Feld hier.
+        out->sessions_background = doc["sb"] | 0;
         out->sessions_parked  = doc["sg"] | 0;
         out->sessions_hidden  = doc["sx"] | 0;
         out->sessions_name_count = 0;
