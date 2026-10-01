@@ -1395,8 +1395,9 @@ static screen_t prev_non_splash_screen = SCREEN_USAGE;
 // Der fruehere Einzelschluessel "battrate" wird nicht mehr gelesen: Er wurde
 // auch am Kabel bei vollem Akku (PMU meldet dort "laedt nicht") gemessen und
 // ist verfaelscht: Der NVS-Auszug vom 2026-09-30 zeigte 5846863 ms/%, rund 54-mal
-// die Annahme. Das remove laeuft bei jedem Start und ist ohne den Schluessel
-// wirkungslos.
+// die Annahme. Geloescht wird nur, wenn er noch da ist: Ein remove auf einen
+// fehlenden Schluessel schreibt bei jedem Start eine rote [E]-Zeile ins
+// Protokoll (gesehen 2026-10-01 nach 4a23e29b).
 static const char* const RATE_SCHLUESSEL[BATTERY_RUNTIME_STAGES] = {
     "battrate0", "battrate1", "battrate2", "battrate3"
 };
@@ -1412,7 +1413,7 @@ static void rate_laden(void) {
         battery_runtime_set_rate(i, rate);
         rate_zuletzt_gesichert[i] = rate;
     }
-    prefs.remove(RATE_SCHLUESSEL_ALT);   // fehlt der Schluessel, ist das folgenlos
+    if (prefs.isKey(RATE_SCHLUESSEL_ALT)) prefs.remove(RATE_SCHLUESSEL_ALT);
     prefs.end();
 }
 

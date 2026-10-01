@@ -17,4 +17,5 @@ public:
     uint32_t getULong(const char* key, uint32_t def = 0);
     size_t   putULong(const char* key, uint32_t value);
     bool     remove(const char* key);
+    bool     isKey(const char* key);
 };
