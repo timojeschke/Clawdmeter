@@ -12,6 +12,7 @@ import datetime
 import json
 import logging
 import logging.handlers
+import math
 import os
 import re
 import signal
@@ -31,6 +32,7 @@ try:
     from daemon.sessions_source import (
         PAYLOAD_LIMIT_GROSS,
         fetch_sessions,
+        lies_konfig_eintraege,
         merge_into_payload,
         read_sessions_config,
     )
@@ -41,6 +43,7 @@ except ImportError:
     from sessions_source import (
         PAYLOAD_LIMIT_GROSS,
         fetch_sessions,
+        lies_konfig_eintraege,
         merge_into_payload,
         read_sessions_config,
     )
@@ -58,6 +61,25 @@ POLL_INTERVAL = 60
 # ebenfalls alle drei Sekunden laeuft. Schneller bringt nichts: Was der Server
 # nicht neu geschrieben hat, kann hier nicht neu ankommen.
 SESSIONS_PUSH_INTERVAL = 3
+# Nach einem gescheiterten Poll (Netz, 5xx, kein Token, 401) wird nicht erst
+# nach POLL_INTERVAL, aber auch nicht im Sekundentakt neu versucht: Ohne
+# Planung lief der Poll bei jedem Schleifendurchlauf, also etwa einmal pro
+# Sekunde, mit einer Logzeile je Versuch. 15 s erholen sich schnell von einem
+# Netzwackler und sind fuer Anthropic nicht aufdringlich.
+POLL_WIEDERHOLUNG_NACH_FEHLER_S = 15
+# So lange darf die letzte erfolgreich geholte Nutzung als "frisch" weiter an
+# das Geraet gehen (mit fortgeschriebener Uhr und Restzeit). Danach wird
+# `ok:false` gesendet, damit die Usage-Seite "No data" zeigt statt einer Zahl,
+# die niemand mehr bestaetigt hat. Zwei Poll-Intervalle plus Luft.
+NUTZUNG_GILT_S = 150
+# Spaetestens nach dieser Zeit geht wieder ein Schreibvorgang raus, auch wenn
+# sich nichts geaendert hat: Die Sessions-Seite haelt ihren Stand 2 min ohne
+# neue Session-Felder und gilt sonst als veraltet.
+HERZSCHLAG_S = 60
+# Felder, die sich von selbst mit der Zeit aendern. Sie zaehlen beim Vergleich
+# "hat sich etwas geaendert?" nicht mit, sonst schriebe der Takt alle drei
+# Sekunden, weil `t` weiterlaeuft.
+ZEITFELDER = ("t", "sr", "wr")
 # Die Schleife wacht jede Sekunde auf. Sie tut dabei fast nichts — Zeiten
 # vergleichen und auf ein Ereignis warten — und sie ist die Obergrenze fuer
 # jeden schnelleren Takt darunter: Bei TICK = 5 haette ein
@@ -151,19 +173,9 @@ def read_chime_setting() -> str:
 
     Defaults to "off" so the device stays silent until the user opts in.
     """
-    try:
-        if CONFIG_FILE.exists():
-            for line in CONFIG_FILE.read_text().splitlines():
-                line = line.split("#", 1)[0].strip()
-                if "=" not in line:
-                    continue
-                key, val = line.split("=", 1)
-                if key.strip().lower() == "chime":
-                    val = val.strip().lower()
-                    if val in ("off", "on"):
-                        return val
-    except OSError:
-        pass
+    for key, val in lies_konfig_eintraege(CONFIG_FILE):
+        if key == "chime" and val.lower() in ("off", "on"):
+            return val.lower()
     return "off"
 
 
@@ -172,19 +184,9 @@ def read_clock_setting() -> str:
 
     Defaults to "off" so existing setups keep showing "Usage" until opted in.
     """
-    try:
-        if CONFIG_FILE.exists():
-            for line in CONFIG_FILE.read_text().splitlines():
-                line = line.split("#", 1)[0].strip()
-                if "=" not in line:
-                    continue
-                key, val = line.split("=", 1)
-                if key.strip().lower() == "clock":
-                    val = val.strip().lower()
-                    if val in ("off", "auto", "12", "24"):
-                        return val
-    except OSError:
-        pass
+    for key, val in lies_konfig_eintraege(CONFIG_FILE):
+        if key == "clock" and val.lower() in ("off", "auto", "12", "24"):
+            return val.lower()
     return "off"
 
 
@@ -207,14 +209,22 @@ def detect_hour_format() -> int:
         return 24
 
 
-def add_clock_fields(payload: dict) -> None:
-    """Add "t" (local wall-clock epoch) + "tf" (12|24) when the config opts in."""
+def uhr_felder() -> dict:
+    """"t" (local wall-clock epoch) + "tf" (12|24), leer wenn die Konfig es nicht will.
+
+    Eine Quelle fuer den Poll und fuer die `ok:false`-Nutzlast des Session-
+    Takts: Beide muessen die Uhr des Geraets stellen.
+    """
     clock = read_clock_setting()
     if clock == "off":
-        return
+        return {}
     tf = 24 if clock == "24" else 12 if clock == "12" else detect_hour_format()
-    payload["t"] = int(time.time()) + time.localtime().tm_gmtoff
-    payload["tf"] = tf
+    return {"t": int(time.time()) + time.localtime().tm_gmtoff, "tf": tf}
+
+
+def add_clock_fields(payload: dict) -> None:
+    """Add "t" + "tf" to the payload when the config opts in."""
+    payload.update(uhr_felder())
 
 
 # The daemon reads two utilization headers today. Whether the API also reports a
@@ -313,12 +323,23 @@ async def poll_scoped_limit(token: str) -> tuple[str, int] | None:
     except ValueError:
         return None
 
-    for eintrag in daten.get("limits") or []:
+    # Fremddaten: JSON darf eine Liste oder null sein, `limits` ein Text, und
+    # `scope`/`model` duerfen fehlen oder etwas anderes als ein Objekt sein.
+    # Nichts davon darf die Schleife in connect_and_run treffen.
+    limits = daten.get("limits") if isinstance(daten, dict) else None
+    if not isinstance(limits, list):
+        return None
+    for eintrag in limits:
         if not isinstance(eintrag, dict) or eintrag.get("kind") != "weekly_scoped":
             continue
-        modell = ((eintrag.get("scope") or {}).get("model") or {}).get("display_name")
+        scope = eintrag.get("scope")
+        modell_objekt = scope.get("model") if isinstance(scope, dict) else None
+        if not isinstance(modell_objekt, dict):
+            continue
+        modell = modell_objekt.get("display_name")
         prozent = eintrag.get("percent")
-        if modell and isinstance(prozent, (int, float)):
+        if (modell and isinstance(prozent, (int, float))
+                and math.isfinite(prozent)):
             return str(modell), int(round(prozent))
     return None
 
@@ -616,7 +637,7 @@ class Session:
         # reads directly and which costs two bytes instead of six per
         # character. _serialised_size() in sessions_source must match this.
         data = json.dumps(payload, separators=(",", ":"),
-                          ensure_ascii=False).encode("utf-8")
+                          ensure_ascii=False).encode("utf-8", errors="replace")
         log(f"Sending: {data.decode()}")
         try:
             await self.client.write_gatt_char(
@@ -715,9 +736,13 @@ def read_token() -> str | None:
         return eigenes
     for path in _windows_credential_candidates():
         try:
-            return _extract_access_token(path.read_text(encoding="utf-8"))
-        except OSError:
+            token = _extract_access_token(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             continue
+        # Eine halb geschriebene oder kaputte Datei liefert None. Dann zaehlt
+        # der naechste Kandidat, nicht sofort "kein Token".
+        if token:
+            return token
     return None
 
 
@@ -765,6 +790,70 @@ async def _wait_first(*events: asyncio.Event, timeout: float) -> None:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def naechster_poll_zeitpunkt(jetzt: float, poll_gelungen: bool) -> float:
+    """Wann der naechste Poll faellig ist — nach JEDEM Versuch, nicht nur nach Erfolg.
+
+    Nach Erfolg in POLL_INTERVAL, nach einem Fehlschlag (vorlaeufiger Fehler,
+    kein Token, 401) in POLL_WIEDERHOLUNG_NACH_FEHLER_S. Ein Refresh-Wunsch
+    des Geraets umgeht diese Planung und loest sofort aus.
+    """
+    wartezeit = POLL_INTERVAL if poll_gelungen else POLL_WIEDERHOLUNG_NACH_FEHLER_S
+    return jetzt + wartezeit
+
+
+def _ist_zahl(wert) -> bool:
+    return isinstance(wert, (int, float)) and not isinstance(wert, bool)
+
+
+def basis_nutzlast(letzte_nutzlast: dict | None, letzter_erfolg: float | None,
+                   jetzt: float, uhr: dict) -> dict:
+    """Die Nutzlast, auf der der Session-Takt aufsetzt — ohne Sessionfelder.
+
+    Liegt eine Nutzung vor und ist sie hoechstens NUTZUNG_GILT_S alt, kommt
+    eine Kopie zurueck, in der die Zeit nachgefuehrt ist: `t` auf jetzt, `sr`
+    und `wr` um die vergangenen ganzen Minuten kleiner (nie unter 0). Ein
+    eingefrorenes `t`/`sr`/`wr` mit `ok:true` liesse das Geraet eine laengst
+    veraltete Zahl als frisch zeigen.
+
+    Sonst `ok:false` plus die Uhrfelder (`uhr`): Die Usage-Seite zeigt "No
+    data", die Sessions-Seite lebt weiter, und die Uhr geht trotzdem richtig.
+    Rein, ohne I/O — der Aufrufer reicht Zeit und Uhrfelder herein.
+    """
+    vergangen = None if letzter_erfolg is None else jetzt - letzter_erfolg
+    if (letzte_nutzlast is None or vergangen is None
+            or not 0 <= vergangen <= NUTZUNG_GILT_S):
+        return {"ok": False, **uhr}
+
+    nutzlast = dict(letzte_nutzlast)
+    if _ist_zahl(nutzlast.get("t")):
+        nutzlast["t"] = int(nutzlast["t"] + vergangen)
+    minuten = int(vergangen // 60)
+    for feld in ("sr", "wr"):
+        wert = nutzlast.get(feld)
+        if _ist_zahl(wert) and wert >= 0:
+            nutzlast[feld] = max(0, int(wert) - minuten)
+    return nutzlast
+
+
+def ohne_zeitfelder(nutzlast: dict) -> dict:
+    return {k: v for k, v in nutzlast.items() if k not in ZEITFELDER}
+
+
+def sendung_faellig(neu: dict, zuletzt_gesendet: dict | None, jetzt: float,
+                    letzter_schreibvorgang: float) -> bool:
+    """Soll der Session-Takt diese Nutzlast jetzt senden?
+
+    Ja, wenn sie sich gegenueber der zuletzt GESENDETEN geaendert hat — ohne
+    die Zeitfelder, die von selbst weiterlaufen — oder wenn seit dem letzten
+    erfolgreichen Schreibvorgang HERZSCHLAG_S vergangen sind.
+    """
+    if zuletzt_gesendet is None:
+        return True
+    if jetzt - letzter_schreibvorgang >= HERZSCHLAG_S:
+        return True
+    return ohne_zeitfelder(neu) != ohne_zeitfelder(zuletzt_gesendet)
 
 
 async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) -> bool:
@@ -829,25 +918,30 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
     session = Session(client)
     await session.setup_refresh_subscription()
 
-    last_poll = 0.0  # D-03: poll immediately on first connect
+    naechster_poll = 0.0  # D-03: poll immediately on first connect
     # Session states change on a scale of seconds; the usage numbers move over
     # hours. Tying both to POLL_INTERVAL would mean a stale session screen, and
     # polling Anthropic every 10 s to fix that would be wasteful and rude. So
     # the session fields get their own, faster beat on the last usage payload.
     last_sessions_push = 0.0
     letzte_nutzlast = None      # Nutzungszahlen ohne Sessionfelder
+    letzter_poll_erfolg = None  # wann diese Zahlen geholt wurden
+    letzter_schreibvorgang = 0.0  # fuer den Herzschlag des Session-Takts
     zuletzt_gesendet = None     # was wirklich zuletzt ueber Funk ging
     used_successfully = False
     consecutive_failures = 0  # D-03: zombie-link break counter
     try:
         while client.is_connected and not stop_event.is_set():
             now = time.time()
-            elapsed = now - last_poll
-            if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
+            if session.refresh_requested.is_set() or now >= naechster_poll:
                 session.refresh_requested.clear()
+                poll_gelungen = False
                 token = read_token()  # D-09: fresh each cycle
                 if not token:
                     log("No token; skipping poll")
+                    # Die alte Nutzung nicht weiter als gueltig fuehren: Die
+                    # Basis des Session-Takts faellt auf `ok:false`.
+                    letzte_nutzlast = None
                     if tray_state:
                         tray_state.set_error("token expired — run claude login")
                 else:
@@ -857,10 +951,15 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                     except AuthError:
                         # Real 401/403 — token genuinely needs a refresh.
                         expired = True
+                        # Die alte Nutzung darf nach dem naechsten Takt nicht
+                        # wieder auftauchen, deshalb verwerfen.
+                        letzte_nutzlast = None
                         if tray_state:
                             tray_state.set_error("token expired — run claude login")
                         payload = None
                     if payload is not None:
+                        poll_gelungen = True
+                        letzter_poll_erfolg = time.time()
                         # Only on the slow beat: this is a second HTTP call and
                         # a weekly figure does not move between two 10 s ticks.
                         scoped = await poll_scoped_limit(token)
@@ -871,8 +970,8 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         gesendet = await session.write_payload(payload, payload_sicher)
                         if gesendet is not None:
                             zuletzt_gesendet = dict(gesendet)
-                            last_poll = time.time()
-                            last_sessions_push = last_poll
+                            letzter_schreibvorgang = time.time()
+                            last_sessions_push = letzter_schreibvorgang
                             used_successfully = True
                             consecutive_failures = 0  # D-03: reset on success
                             if tray_state:
@@ -885,14 +984,18 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                                     f" write failures); abandoning connection"
                                 )
                                 break
-                    elif expired:
+                    elif expired and (zuletzt_gesendet is None
+                                      or zuletzt_gesendet.get("ok") is not False):
                         # Token genuinely dead -> show "No data" now instead of
                         # stale numbers. Same reasoning as the 429 handling above:
                         # a frozen display that still shows yesterday's figure is
                         # worse than one that admits it does not know.
+                        # Ging `ok:false` schon raus, schickt der Session-Takt den
+                        # Rest; dann hier nicht alle 15 s noch einmal dasselbe.
                         log("No data (token dead); signalling idle to device")
                         if await session.write_payload({"ok": False}):
-                            last_poll = time.time()
+                            zuletzt_gesendet = {"ok": False}
+                            letzter_schreibvorgang = time.time()
                             consecutive_failures = 0
                         else:
                             consecutive_failures += 1
@@ -906,24 +1009,30 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                     # timeout, rate-limit, 5xx). poll_api already logged it; do NOT
                     # toast "token expired" — that mislabeled a boot-time DNS blip
                     # as an auth problem (SC#5). Leave tray state unchanged; the next
-                    # tick retries and set_connected() recovers it.
+                    # try (in POLL_WIEDERHOLUNG_NACH_FEHLER_S) recovers it.
+                naechster_poll = naechster_poll_zeitpunkt(time.time(), poll_gelungen)
 
-            # Faster beat for the session fields only. Re-sends the cached usage
-            # numbers unchanged — the device overwrites its whole state from each
-            # payload, so leaving them out would blank the usage screen.
-            if (letzte_nutzlast is not None
-                    and time.time() - last_sessions_push >= SESSIONS_PUSH_INTERVAL):
-                aktualisiert, sicher = await add_session_fields_paar(
-                    dict(letzte_nutzlast))
+            # Faster beat for the session fields. Laeuft IMMER, auch wenn noch
+            # nie ein Poll gelang: Die Basis (basis_nutzlast) ist dann `ok:false`
+            # plus Uhr, und die Sessions-Seite lebt bei API-Ausfall weiter. Die
+            # Nutzung wird dabei nicht unveraendert wiederholt, sondern mit
+            # fortgeschriebener Zeit — und nur bis NUTZUNG_GILT_S.
+            if time.time() - last_sessions_push >= SESSIONS_PUSH_INTERVAL:
+                jetzt = time.time()
+                basis = basis_nutzlast(letzte_nutzlast, letzter_poll_erfolg,
+                                       jetzt, uhr_felder())
+                aktualisiert, sicher = await add_session_fields_paar(basis)
                 # Compare against what was last actually SENT, not against the
                 # usage-only payload: the latter never carries session fields,
                 # so the two always differed and the beat wrote every 10 s
                 # even when nothing had changed (field observation 2026-09-25).
-                if aktualisiert != zuletzt_gesendet:
+                if sendung_faellig(aktualisiert, zuletzt_gesendet, jetzt,
+                                   letzter_schreibvorgang):
                     gesendet = await session.write_payload(aktualisiert, sicher)
                     if gesendet is not None:
                         zuletzt_gesendet = dict(gesendet)
-                        last_sessions_push = time.time()
+                        letzter_schreibvorgang = time.time()
+                        last_sessions_push = letzter_schreibvorgang
                         consecutive_failures = 0
                         # Auch das ist ein erfolgreicher Schreibvorgang. Ohne
                         # dieses Flag meldet connect_and_run "nie erfolgreich
@@ -942,6 +1051,9 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                             )
                             break
                 else:
+                    # Nichts zu senden: nur den Takt weiterschieben. Der
+                    # Schreibvorgang-Zeitpunkt bleibt, sonst kaeme der
+                    # Herzschlag nie.
                     last_sessions_push = time.time()
 
             # Wake on a refresh request OR a stop, whichever comes first. Waking

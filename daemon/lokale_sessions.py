@@ -88,7 +88,13 @@ def _prozess_lebt(pid: int) -> bool | None:
 
 def _ist_aktuell(eintrag: dict, jetzt: float) -> bool:
     """Lebt der Prozess — oder ist die Datei wenigstens frisch genug?"""
-    lebt = _prozess_lebt(int(eintrag.get("pid", 0) or 0))
+    try:
+        pid = int(eintrag.get("pid", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        # Eine Datei mit unsinniger PID ist Fremddaten — ueberspringen, nicht
+        # die ganze Liste (und damit den Sendeweg) daran scheitern lassen.
+        return False
+    lebt = _prozess_lebt(pid)
     if lebt is not None:
         return lebt
     gestempelt = eintrag.get("updatedAt") or eintrag.get("statusUpdatedAt") or 0
