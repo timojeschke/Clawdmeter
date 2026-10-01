@@ -17,7 +17,6 @@ LV_FONT_DECLARE(font_tiempos_34);
 LV_FONT_DECLARE(font_styrene_48);
 LV_FONT_DECLARE(font_styrene_28);
 LV_FONT_DECLARE(font_styrene_24);
-LV_FONT_DECLARE(font_styrene_24_fett);
 LV_FONT_DECLARE(font_styrene_20);
 LV_FONT_DECLARE(font_styrene_16);
 LV_FONT_DECLARE(font_styrene_14);
@@ -52,7 +51,7 @@ struct Layout {
     const lv_font_t* pace_font;      // enterprise "Under/On/Over pace" line
     const lv_font_t* anim_font;      // animated status line
     int16_t anim_y;                  // status line offset from bottom
-    bool    small_icons;             // 40px logo + 24px battery (vs 80/48) on small screens
+    bool    small_icons;             // 40px logo (vs 80) on small screens
     int16_t title_nudge;             // Verschiebung der Ueberschrift, damit sie
                                      // zwischen Logo und Batterie mittig sitzt
                                      // statt mittig im Bildschirm — links steht
@@ -60,18 +59,24 @@ struct Layout {
                                      // sind verschieden breit. Berechnet in
                                      // compute_layout(), nicht geraten.
     int16_t logo_y;                  // logo top edge
-    int16_t batt_y;                  // battery icon top edge
-    int16_t batt_w;                  // battery icon width, for position math
     const lv_font_t* sess_count_font; // session counts — serif, like the title
     const lv_font_t* sess_name_font;    // die Sessionnamen selbst
     const lv_font_t* sess_caption_font; // "Total" / "Running" / "Running now" —
                                         // read from across the desk, so a step
                                         // above the pace line they used to share
-    const lv_font_t* batt_font;      // battery percentage
-    int16_t batt_lbl_gap;            // gap when the percentage sits beside it
-    int16_t batt_h;                  // battery body height
-    int16_t batt_nub_w, batt_nub_h;  // the little contact stub on the right
-    bool    batt_inside;             // percentage inside the body, or beside it
+
+    // Batterie-Ecke oben rechts: Pixelbloecke und darunter eine Textzeile.
+    // Alle Masse in Pixeln, y gilt von der Oberkante der Ecke (= L.margin).
+    int16_t batt_eck_w;              // Breite der Ecke, rechtsbuendig auf L.margin;
+                                     // die Titelmitte rechnet mit ihr
+    int16_t batt_blk_w, batt_blk_h;  // ein Block
+    int16_t batt_blk_gap;            // Luecke zwischen zwei Bloecken
+    int16_t batt_nub_w, batt_nub_h;  // Kontaktstueck rechts der Bloecke
+    int16_t batt_nub_gap;            // Luecke Bloecke - Kontaktstueck
+    int16_t batt_blk_y;              // Oberkante der Bloecke
+    int16_t batt_row_y;              // Oberkante der Textzeile
+    int16_t batt_dot_pad;            // Luft links und rechts des Trennpunkts
+    const lv_font_t* batt_row_font;  // Schrift der Textzeile
 
     // Pairing hint / idle screen
     int16_t pair_y1, pair_y2, pair_y3;
@@ -92,16 +97,12 @@ static Layout L = {};
 // existing boards happen to land on the two breakpoints below; new ports
 // inherit the closer one — visually OK, may need a polish pass for
 // pixel-perfect alignment but never blocks the port from booting.
-// Abstand zwischen Batteriekoerper und Kontaktstueck.
-#define BATT_NUB_GAP   1
-
-// Mitte des freien Felds zwischen Logo und Batterie, als Abweichung von der
-// Bildschirmmitte. Setzt voraus, dass L.margin, L.scr_w, L.batt_w und
-// L.batt_nub_w bereits gesetzt sind.
+// Mitte des freien Felds zwischen Logo und Batterie-Ecke, als Abweichung von
+// der Bildschirmmitte. Setzt voraus, dass L.margin, L.scr_w und L.batt_eck_w
+// bereits gesetzt sind.
 static int16_t titel_versatz(int16_t logo_w) {
     const int16_t logo_rechts = L.margin + logo_w;
-    const int16_t batt_links  = L.scr_w - L.margin
-                              - (L.batt_w + BATT_NUB_GAP + L.batt_nub_w);
+    const int16_t batt_links  = L.scr_w - L.margin - L.batt_eck_w;
     return (int16_t)(((logo_rechts + batt_links) / 2) - (L.scr_w / 2));
 }
 
@@ -135,17 +136,21 @@ static void compute_layout(const BoardCaps& c) {
     L.sess_count_font = &font_tiempos_56;
     L.sess_name_font = &font_styrene_28;
     L.sess_caption_font = &font_styrene_20;
-    L.batt_y = L.title_y + 6;
-    // Deliberately larger than the 48 px icon it replaced: at arm's length on
-    // a desk the number has to be readable at a glance, and the header has the
-    // room. Only one weight of Styrene ships, so "heavier" means a larger size.
-    L.batt_w = 66;
-    L.batt_h = 34;
-    L.batt_nub_w = 6;
-    L.batt_nub_h = 16;
-    L.batt_inside = true;
-    L.batt_font = &font_styrene_24_fett;
-    L.batt_lbl_gap = 6;
+    // Batterie-Ecke, grosse Stufe (480x480): fuenf Bloecke 8x18 im Abstand 3,
+    // Kontaktstueck 4x8. Die Ecke ist 128 px breit: Die laengste Zeile
+    // ("100% · Charging", rund 120 px) muss hineinpassen, sonst schneidet der
+    // Rahmen ihr linkes Ende ab. Zeile und Bloecke enden unter L.content_y.
+    L.batt_eck_w = 128;
+    L.batt_blk_w = 8;
+    L.batt_blk_h = 18;
+    L.batt_blk_gap = 3;
+    L.batt_nub_w = 4;
+    L.batt_nub_h = 8;
+    L.batt_nub_gap = 3;
+    L.batt_blk_y = 22;
+    L.batt_row_y = 51;
+    L.batt_dot_pad = 5;
+    L.batt_row_font = &font_styrene_14;
     L.pair_y1 = 40;
     L.pair_y2 = 120;
     L.pair_y3 = 160;
@@ -168,6 +173,18 @@ static void compute_layout(const BoardCaps& c) {
     } else if (c.height >= 300) {
         // Compact layout — tuned for 368x448 (AMOLED-1.8).
         L.content_y = 85;
+        // Batterie-Ecke kleiner: Bloecke 7x16, Zeile in Styrene 12. Die Ecke
+        // ist so schmal, dass die Uhr (Tiempos 56, rund 150 px) zwischen Logo
+        // und Ecke noch Platz hat. Zeile endet bei 20 + 40 + 15 = 75, die
+        // erste Karte beginnt bei 85.
+        L.batt_eck_w = 108;
+        L.batt_blk_w = 7;
+        L.batt_blk_h = 16;
+        L.batt_nub_h = 8;
+        L.batt_blk_y = 16;
+        L.batt_row_y = 40;
+        L.batt_dot_pad = 4;
+        L.batt_row_font = &font_styrene_12;
         L.usage_panel_h = 130;
         L.usage_panel_gap = 12;
         L.usage_bar_y = 48;
@@ -182,7 +199,7 @@ static void compute_layout(const BoardCaps& c) {
     } else {
         // Small layout — tuned for 240x240 (LCD-1.54 and similar square TFTs).
         // Everything shrinks: fonts two steps down, panels ~half height, and
-        // the corner logo/battery switch to the 40px/24px small assets.
+        // the corner logo switches to the 40px small asset.
         L.margin = 8;
         L.title_y = 4;
         L.content_y = 44;
@@ -210,16 +227,23 @@ static void compute_layout(const BoardCaps& c) {
         L.sess_count_font = &font_tiempos_34;
         L.sess_name_font = &font_styrene_14;
         L.sess_caption_font = &font_styrene_14;
-        L.batt_y = 16;   // same centre the 24 px icon had
-        // At this size the interior is ~7 px tall — no font is legible in
-        // there, so the number stays beside the battery on small screens.
-        L.batt_w = 20;
-        L.batt_h = 11;
+        // Batterie-Ecke, kleinste Stufe: Bloecke 5x10, Kontaktstueck 2x4,
+        // Zeile in Styrene 12 (15 px hoch). Ecke oben 8, Zeile endet bei
+        // 8 + 13 + 15 = 36, die erste Karte beginnt bei 44. 92 px reichen
+        // fuer "99% · Charging"; nur "100% · Charging" ragt links ueber den
+        // Rahmen hinaus (siehe battery_create). Breiter ginge zulasten der Uhr,
+        // die schon bei 92 px knapp zwischen Logo und Ecke sitzt.
+        L.batt_eck_w = 92;
+        L.batt_blk_w = 5;
+        L.batt_blk_h = 10;
+        L.batt_blk_gap = 2;
         L.batt_nub_w = 2;
-        L.batt_nub_h = 5;
-        L.batt_inside = false;
-        L.batt_font = &font_styrene_12;
-        L.batt_lbl_gap = 3;
+        L.batt_nub_h = 4;
+        L.batt_nub_gap = 2;
+        L.batt_blk_y = 0;
+        L.batt_row_y = 13;
+        L.batt_dot_pad = 3;
+        L.batt_row_font = &font_styrene_12;
         L.pair_y1 = 12;
         L.pair_y2 = 56;
         L.pair_y3 = 80;
@@ -236,12 +260,12 @@ static void compute_layout(const BoardCaps& c) {
     L.content_w = L.scr_w - 2 * L.margin;
     // ZULETZT: Die Ueberschrift soll mittig zwischen Logo und Batterie stehen,
     // nicht mittig im Bildschirm — links das Logo, rechts die Batterie, beide
-    // verschieden breit. Die Rechnung braucht L.margin, L.batt_w und
-    // L.batt_nub_w, und die stehen erst hier fest.
+    // verschieden breit. Die Rechnung braucht L.margin und L.batt_eck_w, und
+    // die stehen erst hier fest.
     //
     // Genau daran ist die erste Fassung gescheitert: Sie rechnete oben im
-    // Block, als L.batt_w noch 0 war, und schob den Titel dadurch 35 Pixel zu
-    // weit nach rechts. Eine Funktion mit Voraussetzungen gehoert dorthin, wo
+    // Block, als die Breite der Ecke noch 0 war, und schob den Titel dadurch
+    // 35 Pixel zu weit nach rechts. Eine Funktion mit Voraussetzungen gehoert dorthin, wo
     // die Voraussetzungen erfuellt sind.
     L.title_nudge = titel_versatz(L.small_icons ? CLAWD_STILL_SMALL_W
                                                 : CLAWD_STILL_W);
@@ -305,46 +329,27 @@ static lv_obj_t* lbl_anim;
 static lv_obj_t* lbl_scoped;
 static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    // per-model weekly quota, replaces the idle line      // status line: connection state + whimsical idle
 
-// ---- Battery indicator (shared, on top) ----
-// ---- Battery indicator: drawn, not an icon ----
-// The Lucide battery glyph fills its interior with level bars, so a number
-// placed inside would sit on top of them. Drawing the battery ourselves frees
-// the interior for the percentage — the way phones show it — and lets the fill
-// take its colour from theme.h instead of being baked into an image.
-#define BATT_BORDER_W  2
-#define BATT_LOW_PCT  10   // below this the fill turns red
+// ---- Batterie-Ecke oben rechts (auf allen Seiten, ueber dem Inhalt) ----
+// Fuenf Pixelbloecke wie die Figur Clawd, darunter eine Zeile "87% · 22 h".
+// Kein Icon und keine Symbolschrift: Der Ladezustand steht als Wort.
+#define BATT_BLOCKS    5
+#define BATT_LOW_PCT  10   // bis einschliesslich hier werden Bloecke und Zahl rot
 #define BATT_STUNDEN_AB_MIN 120   // ab hier zeigt die Restlaufzeit Stunden statt Minuten
-// Solid terracotta, the same accent the usage bars use — the header then reads
-// as part of the same design instead of a grey box borrowed from elsewhere.
 // Durchmesser des Rings neben der Modellquote, und die Dicke seines Bogens.
 #define SCOPED_RING_PX    34
 #define SCOPED_RING_Y_KORR 2
 #define SCOPED_RING_DICKE  5
-
-// Senkrechter Ausgleich der Ziffern im Batteriekoerper, ausgemessen.
-#define BATT_ZAHL_Y_KORR -2
 
 // Wie lange der letzte Sessionstand ohne Nachschub weitergilt. Der Daemon
 // schickt alle drei Sekunden; zwei Minuten decken einen Serverneustart und
 // einen Verbindungsabbruch ab, ohne veraltete Namen ewig stehen zu lassen.
 #define SESSIONS_STALE_MS (2u * 60u * 1000u)
 
-#define BATT_FILL_OPA LV_OPA_COVER
-
-static lv_obj_t* battery_body;
-static lv_obj_t* battery_fill;
-static lv_obj_t* battery_nub;
-static lv_obj_t* battery_lbl;
-// Faux-Fettung: zwei versetzte Kopien hinter der Zahl. Styrene liegt hier nur
-// als Regular vor (assets/StyreneB-Regular.otf); ein echter Fettschnitt hiesse
-// eine zweite Schriftdatei fuer drei Ziffern. Zwei Versaetze statt einem, weil
-// einer allein gegen die gefuellte Flaeche noch zu duenn wirkte.
-// Styrene liegt hier nur als Regular vor (assets/StyreneB-Regular.otf). Statt
-// eine zweite Schriftdatei fuer drei Ziffern einzubinden, wird die Zahl acht
-// Mal ringsum versetzt gezeichnet — eine Umrandung von einem Pixel in jede
-// Richtung. Das verdickt den Strich symmetrisch; ein Versatz nur nach unten
-// rechts, wie vorher, sieht aus wie ein Schatten und nicht wie Fettdruck.
-static lv_obj_t* battery_sub_lbl;   // charge symbol while charging, else time left
+static lv_obj_t* battery_root;                  // durchsichtiger Rahmen der Ecke
+static lv_obj_t* battery_block[BATT_BLOCKS];    // gefuellt Terrakotta, leer Spurgrau
+static lv_obj_t* battery_pct_lbl;               // "87%"
+static lv_obj_t* battery_dot_lbl;               // Trennpunkt, nur mit Prozent und Zeitangabe
+static lv_obj_t* battery_sub_lbl;               // Restlaufzeit oder Ladezustand
 static lv_obj_t* logo_img;
 
 // ---- Live-data freshness → which usage sub-view to show ----
@@ -511,104 +516,84 @@ static lv_obj_t* make_pill(lv_obj_t* parent, const char* text) {
     return lbl;
 }
 
-// Builds the battery out of primitives: body, fill, contact stub, number.
-// Right-aligned as a unit so the stub lands where the old icon's edge was.
 static void rate_laden(void);
 
+// Ein unsichtbarer Behaelter der Ecke: ohne Stil, nimmt weder Beruehrung an
+// noch laesst er sich scrollen.
+static lv_obj_t* battery_behaelter(lv_obj_t* parent) {
+    lv_obj_t* o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_flag(o, LV_OBJ_FLAG_SCROLLABLE, false);
+    lv_obj_set_flag(o, LV_OBJ_FLAG_CLICKABLE, false);
+    return o;
+}
+
+// Ein Pixelblock der Batterie-Ecke: eckig und deckend.
+static lv_obj_t* battery_pixel(lv_obj_t* parent, int16_t w, int16_t h,
+                               lv_color_t farbe) {
+    lv_obj_t* o = battery_behaelter(parent);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_style_bg_color(o, farbe, 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    return o;
+}
+
+static lv_obj_t* battery_text(lv_obj_t* parent, lv_color_t farbe) {
+    lv_obj_t* l = lv_label_create(parent);
+    lv_obj_set_style_text_font(l, L.batt_row_font, 0);
+    lv_obj_set_style_text_color(l, farbe, 0);
+    lv_label_set_text(l, "");
+    return l;
+}
+
+// Baut die Ecke als einen Rahmen, der rechtsbuendig auf L.margin sitzt und
+// unter L.content_y endet. Alle Teile haengen darin, damit Ein- und Ausblenden
+// ein einziger Aufruf ist (apply_battery_visibility) und kein Teil vergessen
+// werden kann. Die Zeile ist so breit wie der Rahmen und schiebt ihren Inhalt
+// ans rechte Ende; so bleibt die rechte Kante stehen, egal wie lang der Text ist.
+// Ist der Text breiter als der Rahmen, waechst er nach links; OVERFLOW_VISIBLE
+// verhindert, dass der Rahmen ihm dabei das Ende abschneidet.
 static void battery_create(lv_obj_t* parent) {
     // Boards without battery telemetry never show the indicator (per the HAL
     // contract; previously every board drew the empty-battery glyph).
     if (!board_caps().has_battery) return;
 
-    const int16_t total_w = L.batt_w + BATT_NUB_GAP + L.batt_nub_w;
-    const int16_t body_x  = L.scr_w - L.margin - total_w;
+    battery_root = battery_behaelter(parent);
+    lv_obj_set_flag(battery_root, LV_OBJ_FLAG_OVERFLOW_VISIBLE, true);
+    lv_obj_set_size(battery_root, L.batt_eck_w, L.content_y - L.margin);
+    lv_obj_set_pos(battery_root, L.scr_w - L.margin - L.batt_eck_w, L.margin);
 
-    battery_body = lv_obj_create(parent);
-    lv_obj_remove_style_all(battery_body);
-    lv_obj_clear_flag(battery_body, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(battery_body, L.batt_w, L.batt_h);
-    lv_obj_set_pos(battery_body, body_x, L.batt_y);
-    lv_obj_set_style_radius(battery_body, L.batt_h / 3, 0);
-    lv_obj_set_style_border_width(battery_body, BATT_BORDER_W, 0);
-    // Quiet outline, loud fill: the charge level should carry the colour, not
-    // the housing.
-    lv_obj_set_style_border_color(battery_body, THEME_DIM, 0);
-
-    // Width is set per update; height and position are fixed.
-    battery_fill = lv_obj_create(battery_body);
-    lv_obj_remove_style_all(battery_fill);
-    lv_obj_clear_flag(battery_fill, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_height(battery_fill, L.batt_h - 2 * BATT_BORDER_W);
-    lv_obj_align(battery_fill, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_radius(battery_fill, (L.batt_h / 3) - BATT_BORDER_W, 0);
-    lv_obj_set_style_bg_opa(battery_fill, BATT_FILL_OPA, 0);
-
-    battery_nub = lv_obj_create(parent);
-    lv_obj_remove_style_all(battery_nub);
-    lv_obj_clear_flag(battery_nub, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(battery_nub, L.batt_nub_w, L.batt_nub_h);
-    lv_obj_set_pos(battery_nub, body_x + L.batt_w + BATT_NUB_GAP,
-                   L.batt_y + (L.batt_h - L.batt_nub_h) / 2);
-    lv_obj_set_style_radius(battery_nub, 1, 0);
-    lv_obj_set_style_bg_opa(battery_nub, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(battery_nub, THEME_DIM, 0);
-
-    // Inside the body on large screens, beside it on small ones where the
-    // interior is too short for any legible font. ui_update_battery() places
-    // the outside variant, because its width changes with the digit count.
-    // Inside the body the number is set in a faux bold: the same glyphs drawn
-    // twice, one pixel apart. Styrene ships here in a single weight
-    // (assets/StyreneB-Regular.otf), so a real bold cut would mean generating
-    // and embedding a second font for three digits. Doubling thickens the
-    // strokes enough to read against the fill, which is the whole point, and
-    // lets the size come down a step so the number stops crowding the outline.
-    battery_lbl = lv_label_create(L.batt_inside ? battery_body : parent);
-    lv_obj_set_style_text_font(battery_lbl, L.batt_font, 0);
-    lv_obj_set_style_text_color(battery_lbl, L.batt_inside ? THEME_TEXT : THEME_DIM, 0);
-    lv_label_set_text(battery_lbl, "");
-    if (L.batt_inside) {
-        // Nicht lv_obj_center(): Das zentriert den Textkasten, nicht die
-        // Ziffern. Der Kasten ist 31 px hoch, die Ziffern belegen davon nur
-        // 17 px, und sie sitzen darin nicht mittig.
-        //
-        // Der Wert ist am gerenderten Bild ausgemessen, nicht aus den
-        // Schriftmassen hergeleitet: Innenraum 30 px, Tinte 17 px hoch mit
-        // 11 px Luft oben und 2 px unten. Mein erster Versuch rechnete mit
-        // base_line und verschob in die FALSCHE Richtung — Timo hat es
-        // gesehen, bevor ich es nachgemessen hatte.
-        lv_obj_align(battery_lbl, LV_ALIGN_CENTER, 0, BATT_ZAHL_Y_KORR);
+    // Gruppe aus Bloecken und Kontaktstueck: ihre rechte Kante ist die des Rahmens.
+    const int16_t gruppe_w = BATT_BLOCKS * L.batt_blk_w
+                           + (BATT_BLOCKS - 1) * L.batt_blk_gap
+                           + L.batt_nub_gap + L.batt_nub_w;
+    const int16_t links = L.batt_eck_w - gruppe_w;
+    for (int i = 0; i < BATT_BLOCKS; i++) {
+        battery_block[i] = battery_pixel(battery_root, L.batt_blk_w, L.batt_blk_h,
+                                         THEME_BAR_BG);
+        lv_obj_set_pos(battery_block[i],
+                       links + i * (L.batt_blk_w + L.batt_blk_gap), L.batt_blk_y);
     }
+    lv_obj_t* nub = battery_pixel(battery_root, L.batt_nub_w, L.batt_nub_h, THEME_BAR_BG);
+    lv_obj_set_pos(nub, L.batt_eck_w - L.batt_nub_w,
+                   L.batt_blk_y + (L.batt_blk_h - L.batt_nub_h) / 2);
 
-    // One line under the battery: the charge symbol while on the cable, an
-    // estimated time left otherwise. Empty while neither applies — see
-    // battery_runtime.h on why an unknown estimate stays blank.
-    battery_sub_lbl = lv_label_create(parent);
-    lv_obj_set_style_text_font(battery_sub_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(battery_sub_lbl, THEME_DIM, 0);
-    // Mittig unter der Batterie, nicht rechtsbuendig: Timo, 2026-09-25, "die
-    // restlaufzeit soll direkt unter der batterie stehen". Rechtsbuendig sah
-    // sie nach links verrutscht aus, weil das Etikett breiter ist als der
-    // Koerper — breiter muss es sein, sonst bricht "ca. 200 min" um.
-    lv_obj_set_style_text_align(battery_sub_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    // Senkrecht in die Mitte zwischen Batterieunterkante und Oberkante des
-    // ersten Blocks. Timo, 2026-09-25: "genau mittig von der Hoehe zwischen
-    // der Batterie und dem naechsten Block." Ein fester Abstand von drei
-    // Pixeln klebte die Zeile an die Batterie und liess darunter ein Loch.
-    const int16_t batt_unten = L.batt_y + L.batt_h;
-    const int16_t luecke     = L.content_y - batt_unten;
-    const int16_t sub_h      = lv_font_get_line_height(&lv_font_montserrat_14);
-    // Die Breite ergibt sich aus dem Platz rechts der Mitte: Ein mittiges
-    // Etikett kann hoechstens doppelt so breit sein wie der Abstand seiner
-    // Mitte zum Bildrand — sonst laeuft es hinaus und wird abgeschnitten.
-    // Gemessen (480x480): Mitte bei 423, also 114 Pixel; "ca. 200 min" und
-    // die Ladezeile passen darin.
-    const int16_t mitte_x = body_x + total_w / 2;
-    const int16_t sub_w   = 2 * (L.scr_w - mitte_x);
-    lv_obj_set_width(battery_sub_lbl, sub_w);
-    lv_obj_set_pos(battery_sub_lbl, mitte_x - sub_w / 2,
-                   batt_unten + (luecke - sub_h) / 2);
-    lv_label_set_long_mode(battery_sub_lbl, LV_LABEL_LONG_CLIP);
-    lv_label_set_text(battery_sub_lbl, "");
+    lv_obj_t* zeile = battery_behaelter(battery_root);
+    lv_obj_set_flag(zeile, LV_OBJ_FLAG_OVERFLOW_VISIBLE, true);
+    lv_obj_set_size(zeile, L.batt_eck_w, LV_SIZE_CONTENT);
+    lv_obj_set_pos(zeile, 0, L.batt_row_y);
+    lv_obj_set_flex_flow(zeile, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(zeile, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(zeile, 0, 0);
+
+    // Drei Etiketten statt eines Textes, weil die Teile verschiedene Farben
+    // haben: Prozent hell, Trennpunkt gedaempft, Rest gedaempft oder Terrakotta.
+    battery_pct_lbl = battery_text(zeile, THEME_TEXT);
+    battery_dot_lbl = battery_text(zeile, THEME_DIM);
+    lv_label_set_text(battery_dot_lbl, "\xC2\xB7");
+    lv_obj_set_style_pad_hor(battery_dot_lbl, L.batt_dot_pad, 0);
+    battery_sub_lbl = battery_text(zeile, THEME_DIM);
 }
 
 
@@ -1006,8 +991,8 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_label_set_text(lbl_title, "Usage");
     lv_obj_set_style_text_font(lbl_title, L.title_font, 0);
     lv_obj_set_style_text_color(lbl_title, COL_TEXT, 0);
-    // The nudge balances the corner logo on the left; smaller on small
-    // screens where the logo is 40px and the battery icon sits closer.
+    // The nudge balances the corner logo on the left against the battery
+    // corner on the right (see titel_versatz()).
     lv_obj_align(lbl_title, LV_ALIGN_TOP_MID, L.title_nudge, L.title_y);
 
     // Usage panels (shown when connected) live in a transparent full-size group
@@ -1077,7 +1062,7 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_arc_set_rotation(scoped_ring, 270);          // Start oben, im Uhrzeigersinn
     lv_arc_set_bg_angles(scoped_ring, 0, 360);
     lv_arc_set_range(scoped_ring, 0, 100);
-    lv_obj_remove_flag(scoped_ring, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(scoped_ring, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_arc_width(scoped_ring, SCOPED_RING_DICKE, LV_PART_MAIN);
     lv_obj_set_style_arc_width(scoped_ring, SCOPED_RING_DICKE, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(scoped_ring, COL_BAR_BG, LV_PART_MAIN);
@@ -1451,21 +1436,9 @@ static void rate_sichern_wenn_geaendert(void) {
 }
 
 static void apply_battery_visibility(void) {
-    if (!battery_body) return;
+    if (!battery_root) return;
     // On the splash the whole indicator gets out of the way of the artwork.
-    const bool hide = (current_screen == SCREEN_SPLASH);
-    lv_obj_t* teile[] = { battery_body, battery_nub, battery_lbl,
-                          battery_sub_lbl };
-    for (lv_obj_t* teil : teile) {
-        if (!teil) continue;
-        if (hide) lv_obj_add_flag(teil, LV_OBJ_FLAG_HIDDEN);
-        else      lv_obj_clear_flag(teil, LV_OBJ_FLAG_HIDDEN);
-    }
-    // An unknown charge (-1) leaves the number blank; the empty body still
-    // shows, so the indicator does not vanish without explanation.
-    if (battery_lbl && lv_label_get_text(battery_lbl)[0] == '\0') {
-        lv_obj_add_flag(battery_lbl, LV_OBJ_FLAG_HIDDEN);
-    }
+    lv_obj_set_flag(battery_root, LV_OBJ_FLAG_HIDDEN, current_screen == SCREEN_SPLASH);
 }
 
 // Tapping the panel used to flip between splash and usage. The side buttons
@@ -1651,24 +1624,69 @@ void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) 
     }
 }
 
+// Wie viele der BATT_BLOCKS Bloecke gefuellt sind: auf ganze Bloecke gerundet
+// (bei fuenf Bloecken also je 20 Prozentpunkte, 10 % ist die Rundungsgrenze).
+// 0 % ergibt keinen Block, jeder Wert darueber mindestens einen, damit 1 % nicht
+// wie ein leerer Akku aussieht; 100 % fuellt alle.
+static int batterie_bloecke_gefuellt(int pct) {
+    int an = (pct * BATT_BLOCKS + 50) / 100;
+    if (pct > 0 && an < 1) an = 1;
+    return an > BATT_BLOCKS ? BATT_BLOCKS : an;
+}
+
+// Setzt Text und Farbe der Zeile unter den Bloecken: Prozent, Trennpunkt und
+// Rest. Der Trennpunkt steht nur, wenn links und rechts etwas steht.
+static void batterie_zeile_setzen(int percent, bool charging, bool vbus_in, bool low) {
+    if (percent < 0) lv_label_set_text(battery_pct_lbl, "");
+    else             lv_label_set_text_fmt(battery_pct_lbl, "%d%%", percent);
+    lv_obj_set_style_text_color(battery_pct_lbl, low ? THEME_RED : THEME_TEXT, 0);
+
+    const int rest = battery_runtime_minutes();
+    lv_color_t rest_farbe = THEME_DIM;
+    if (charging) {
+        // Timo, 2026-09-25: beim Laden die Akzentfarbe, nicht Gruen. Gruen
+        // gehoert hier zu den Nutzungsbalken und hiesse dort "viel Luft".
+        lv_label_set_text(battery_sub_lbl, "Charging");
+        rest_farbe = THEME_ACCENT;
+    } else if (vbus_in) {
+        // Kabel steckt, Akku ist voll: keine Zahl, denn es wird nichts
+        // verbraucht, was man hochrechnen koennte.
+        lv_label_set_text(battery_sub_lbl, "On USB");
+    } else if (rest >= BATT_STUNDEN_AB_MIN) {
+        // Ab BATT_STUNDEN_AB_MIN Stunden statt Minuten: "1562 min" liest
+        // niemand, und eine Schaetzung aus ganzzahligen Prozent
+        // rechtfertigt bei ueber zwei Stunden keine Minuten. Kaufmaennisch
+        // gerundet: (rest + 30) / 60.
+        lv_label_set_text_fmt(battery_sub_lbl, "%d h", (rest + 30) / 60);
+    } else if (rest >= 0) {
+        // Rounded to the coarseness the estimate deserves: a drain slope
+        // from a whole-percent reading cannot justify single minutes. Ohne
+        // "ca.": Dass eine Restlaufzeit geschaetzt ist, ist ohnehin klar, und
+        // auf einem Tischdisplay zaehlt jedes Zeichen. Timo, 2026-09-25:
+        // "lass da ca. weg bei der Schaetzung."
+        lv_label_set_text_fmt(battery_sub_lbl, "%d min", rest);
+    } else {
+        // Unbekannt bleibt leer, siehe battery_runtime.h.
+        lv_label_set_text(battery_sub_lbl, "");
+    }
+    lv_obj_set_style_text_color(battery_sub_lbl, rest_farbe, 0);
+
+    const bool mit_punkt = percent >= 0 && lv_label_get_text(battery_sub_lbl)[0] != '\0';
+    lv_obj_set_flag(battery_dot_lbl, LV_OBJ_FLAG_HIDDEN, !mit_punkt);
+}
+
 void ui_update_battery(int percent, bool charging, bool vbus_in) {
-    if (!battery_body) return;
+    if (!battery_root) return;
 
-    const int16_t innen = L.batt_w - 2 * BATT_BORDER_W;
     const int pct = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
-
-    // Round up so that 1% still draws a visible sliver rather than nothing.
-    int16_t fuellung = (int16_t)((innen * pct + 99) / 100);
-    if (pct > 0 && fuellung < 1) fuellung = 1;
-    lv_obj_set_width(battery_fill, fuellung);
-
-    lv_color_t farbe = THEME_ACCENT;
-    // Timo, 2026-09-25: beim Laden die Akzentfarbe, nicht Gruen. Gruen gehoert
-    // hier zu den Nutzungsbalken und hiesse dort "viel Luft" — auf der
-    // Batterie sagte es faelschlich dasselbe.
-    if (charging)                 farbe = THEME_ACCENT;
-    else if (pct <= BATT_LOW_PCT) farbe = THEME_RED;
-    lv_obj_set_style_bg_color(battery_fill, farbe, 0);
+    // Rot nur beim Entladen: Am Kabel ist ein niedriger Stand kein Alarm, und
+    // Gruen hiesse auf den Nutzungsbalken "viel Luft".
+    const bool low = !charging && pct <= BATT_LOW_PCT;
+    const lv_color_t gefuellt = low ? THEME_RED : THEME_ACCENT;
+    const int an = batterie_bloecke_gefuellt(pct);
+    for (int i = 0; i < BATT_BLOCKS; i++) {
+        lv_obj_set_style_bg_color(battery_block[i], i < an ? gefuellt : THEME_BAR_BG, 0);
+    }
 
     // Bildschirm und Helligkeitsstufe liest der Schaetzer hier selbst ein: Sie
     // aendern den Verbrauch genauso wie das Kabel, und main.cpp ruft diese
@@ -1676,51 +1694,6 @@ void ui_update_battery(int percent, bool charging, bool vbus_in) {
     battery_runtime_sample(percent, charging, vbus_in, idle_is_asleep(),
                            brightness_get_stage(), lv_tick_get());
     rate_sichern_wenn_geaendert();
-    if (battery_sub_lbl) {
-        const int rest = battery_runtime_minutes();
-        if (charging) {
-            lv_label_set_text(battery_sub_lbl, LV_SYMBOL_CHARGE " Charging");
-        } else if (vbus_in) {
-            // Kabel steckt, Akku ist voll: keine Zahl, denn es wird nichts
-            // verbraucht, was man hochrechnen koennte. "On USB" statt
-            // "Plugged in": das ragte auf 480 px ueber den 20-px-Rand.
-            lv_label_set_text(battery_sub_lbl, LV_SYMBOL_CHARGE " On USB");
-        } else if (rest >= 0) {
-            // Rounded to the coarseness the estimate deserves: a drain slope
-            // from a whole-percent reading cannot justify single minutes.
-            // Nur die Zahl und die Einheit. Das "ca." stand vorher davor,
-            // aber es ist dort ohnehin klar, dass eine Restlaufzeit geschaetzt
-            // ist, und auf einem Tischdisplay zaehlt jedes Zeichen. Timo,
-            // 2026-09-25: "lass da ca. weg bei der Schaetzung."
-            //
-            // Ab BATT_STUNDEN_AB_MIN Stunden statt Minuten: "1562 min" liest
-            // niemand, und eine Schaetzung aus ganzzahligen Prozent
-            // rechtfertigt bei ueber zwei Stunden keine Minuten. Kaufmaennisch
-            // gerundet: (rest + 30) / 60.
-            if (rest >= BATT_STUNDEN_AB_MIN) {
-                lv_label_set_text_fmt(battery_sub_lbl, "%d h", (rest + 30) / 60);
-            } else {
-                lv_label_set_text_fmt(battery_sub_lbl, "%d min", rest);
-            }
-        } else {
-            lv_label_set_text(battery_sub_lbl, "");
-        }
-    }
-
-    if (battery_lbl) {
-        if (percent < 0) {
-            lv_label_set_text(battery_lbl, "");
-        } else if (L.batt_inside) {
-            // No percent sign inside — the battery outline already says what
-            // the number means, and the glyph would cost a third of the room.
-            lv_label_set_text_fmt(battery_lbl, "%d", percent);
-        } else {
-            lv_label_set_text_fmt(battery_lbl, "%d%%", percent);
-            // Re-align on every update: the label width changes with the
-            // digit count and lv_obj_align_to() is a one-shot placement.
-            lv_obj_align_to(battery_lbl, battery_body,
-                            LV_ALIGN_OUT_LEFT_MID, -L.batt_lbl_gap, 0);
-        }
-    }
+    batterie_zeile_setzen(percent, charging, vbus_in, low);
     apply_battery_visibility();
 }
