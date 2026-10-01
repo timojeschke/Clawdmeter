@@ -389,6 +389,14 @@ void setup() {
         board_caps().name, W, H);
 }
 
+// Mindestabstand zwischen zwei Samples fuer usage_rate.cpp (siehe loop()).
+// 60 s und nicht 30 s: Der Ring hat 6 Plaetze, also 5 Abstaende, und die
+// Messspanne muss MIN_WINDOW_MS (240 s) erreichen. 5 x 30 s = 150 s haette die
+// Gruppe dauerhaft auf "Idle" gehalten, 5 x 60 s = 300 s reicht.
+static const uint32_t USAGE_RATE_SAMPLE_MS = 60000;
+static uint32_t usage_rate_last_ms = 0;
+static bool     usage_rate_sampled = false;
+
 static ble_state_t last_ble_state = BLE_STATE_INIT;
 
 // Hold-to-pair gesture: hold the PWR button ~3s, then RELEASE → clear all BLE
@@ -522,7 +530,20 @@ void loop() {
     if (ble_has_data()) {
         if (parse_json(ble_get_data(), &usage)) {
             int g_before = usage_rate_group();
-            bool session_reset = usage_rate_sample(usage.session_pct);
+            // Nur echte Nutzungsmessungen sampeln, und hoechstens alle 60 s:
+            // Die Session-Updates alle paar Sekunden tragen dieselbe Nutzung und
+            // fuellten den Ring mit 6 Plaetzen so schnell, dass er weniger als
+            // MIN_WINDOW_MS abdeckte (Gruppe blieb "Idle"); ein {"ok":false}
+            // sampelte 0.0 und erzeugte danach einen scheinbaren Sprung.
+            // Der Reset-Ton haengt am Rueckgabewert; ein Abfall wird beim
+            // naechsten Sample genau einmal erkannt, danach ist der Ring neu.
+            bool session_reset = false;
+            if (usage.ok && (!usage_rate_sampled ||
+                             millis() - usage_rate_last_ms >= USAGE_RATE_SAMPLE_MS)) {
+                session_reset = usage_rate_sample(usage.session_pct);
+                usage_rate_last_ms = millis();
+                usage_rate_sampled = true;
+            }
             int g_after = usage_rate_group();
             // 5-hour session limit refilled → chime so the user knows they can
             // use Claude again (no-op on boards without a buzzer). Gated on the

@@ -1185,7 +1185,12 @@ void ui_update(const UsageData* data) {
     }
     fable_zeile_zeigen();
     letzte_daten = *data;
-    update_sessions_screen(data);
+    // Nur aufbauen, wenn die Sessionseite zu sehen ist: Im Leerzustand haengt
+    // update_sessions_screen() die EINE Kreatur in den Sessions-Container, und
+    // auf der Usage-Ruheansicht liess das sie bei jeder Nutzlast verschwinden
+    // und wiederkommen. Beim Seitenwechsel baut ui_show_screen() aus
+    // letzte_daten neu auf, deshalb geht hier nichts verloren.
+    if (current_screen == SCREEN_SESSIONS) update_sessions_screen(data);
     data_ok = data->ok;
     if (!data->ok) return;          // a {"ok":false} "no data" beat → fall through to idle, keep last numbers
     last_data_ms = lv_tick_get();   // a real usage update just landed
@@ -1405,6 +1410,10 @@ static const char* const RATE_SCHLUESSEL[BATTERY_RUNTIME_STAGES] = {
 
 static uint32_t rate_zuletzt_gesichert[BATTERY_RUNTIME_STAGES] = {0, 0, 0, 0};
 
+// Ab dieser Abweichung (in Prozent) von der zuletzt gesicherten Rate derselben
+// Stufe wird neu geschrieben.
+static const uint32_t RATE_SICHERN_SCHWELLE_PCT = 10;
+
 static void rate_laden(void) {
     Preferences prefs;
     prefs.begin("clawdmeter", false);
@@ -1429,7 +1438,15 @@ static void rate_sichern_wenn_geaendert(void) {
     Serial.printf("Akku-Rate gemessen: Stufe %d, %lu ms/%%, Spanne %lu ms, Abfall %d %%\n",
                   stufe, (unsigned long)rate, (unsigned long)spanne_ms, abfall);
 
-    if (rate == rate_zuletzt_gesichert[stufe]) return;
+    // Nur bei spuerbarer Abweichung schreiben: Die Rate wandert mit jedem
+    // Prozentabfall um ein paar Prozent, und Flash hat endlich viele
+    // Schreibzyklen. Verglichen wird mit dem zuletzt GESICHERTEN Wert, nicht
+    // mit der letzten Messung, sonst liefe die gespeicherte Rate in kleinen
+    // Schritten davon. Ohne gesicherten Wert (0) wird immer geschrieben.
+    const uint32_t gesichert = rate_zuletzt_gesichert[stufe];
+    const uint32_t diff = rate > gesichert ? rate - gesichert : gesichert - rate;
+    if (gesichert != 0 &&
+        (uint64_t)diff * 100 <= (uint64_t)gesichert * RATE_SICHERN_SCHWELLE_PCT) return;
     Preferences prefs;
     prefs.begin("clawdmeter", false);
     prefs.putULong(RATE_SCHLUESSEL[stufe], rate);
@@ -1578,11 +1595,21 @@ void ui_show_screen(screen_t screen) {
     case SCREEN_SPLASH:  splash_show(); break;
     case SCREEN_USAGE:
         lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+        // Im Ruhe- und Kopplungszustand gehoert die Kreatur hierher. Die
+        // Sessionseite hat sie womoeglich im Leerzustand mitgenommen; im
+        // Live-Zustand (2) bleibt sie dort, die Seite braucht sie nicht.
+        if (view_state == 0 || view_state == 1) mini_kreatur_zeigen(idle_group, -20);
         if (wechsel) seite_aufblenden(usage_container);
         break;
     case SCREEN_SESSIONS:
         if (sessions_container) {
             lv_obj_clear_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
+            // Jedes Mal aus letzte_daten neu aufbauen, nicht nur beim Umschlagen
+            // des Leerzustands: Die Kreatur gibt es nur einmal. Hat die
+            // Usage-Seite sie inzwischen geholt, sieht der Takt keinen
+            // Wechsel und die leere Seite bliebe ohne Kreatur. Ebenso ist der
+            // Hinweis "No data" / "No connection" auf dem neuesten Stand.
+            update_sessions_screen(&letzte_daten);
             if (wechsel) seite_aufblenden(sessions_container);
         }
         break;
@@ -1620,6 +1647,12 @@ void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) 
     if (s_ble_connected && !was_connected) connected_at_ms = lv_tick_get();
     // pair / idle / usage — picked from connection + data freshness.
     update_view_state();
+    // Der Hinweis der leeren Sessionseite haengt am Verbindungszustand
+    // ("No data" mit Funk, "No connection" ohne). Der Takt baut nur bei einem
+    // Wechsel von leer zu gefuellt neu auf und bemerkt das nicht.
+    if (s_ble_connected != was_connected && current_screen == SCREEN_SESSIONS) {
+        update_sessions_screen(&letzte_daten);
+    }
 }
 
 void ui_update_battery(int percent, bool charging, bool vbus_in) {
