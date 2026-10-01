@@ -17,8 +17,11 @@ static bool take(bool* f) { bool v = *f; *f = false; return v; }
 bool sim_take_pwr_pressed(void)  { return take(&edge_pressed); }
 bool sim_take_pwr_long(void)     { return take(&edge_long); }
 bool sim_take_pwr_released(void) { return take(&edge_released); }
-int  sim_battery_pct(void) { return battery; }
-bool sim_charging(void)    { return charging; }
+// ENTWURF (Wegwerf-Zweig): Zustaende per Umgebung erzwingen.
+static const char* envs(const char* n) { const char* v = getenv(n); return (v && *v) ? v : NULL; }
+int  sim_battery_pct(void) { const char* v = envs("SIM_BATT_PCT"); return v ? atoi(v) : battery; }
+bool sim_charging(void)    { const char* v = envs("SIM_CHARGING"); return v ? atoi(v) != 0 : charging; }
+bool sim_vbus(void)        { const char* v = envs("SIM_VBUS"); return v ? atoi(v) != 0 : (envs("SIM_CHARGING") ? atoi(envs("SIM_CHARGING")) != 0 : charging); }
 bool sim_should_quit(void) { return quit; }
 
 // Matches the AXP2101 long-press threshold main.cpp's pair gesture expects.

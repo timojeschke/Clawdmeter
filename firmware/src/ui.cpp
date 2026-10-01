@@ -6,6 +6,7 @@
 #include "battery_runtime.h"
 #include <lvgl.h>
 #include <time.h>
+#include <stdlib.h>   // ENTWURF
 #include "logo.h"
 #include "clawd_still.h"
 #include "icons.h"
@@ -245,6 +246,16 @@ static void compute_layout(const BoardCaps& c) {
     // die Voraussetzungen erfuellt sind.
     L.title_nudge = titel_versatz(L.small_icons ? CLAWD_STILL_SMALL_W
                                                 : CLAWD_STILL_W);
+    {   // ENTWURF: Titelmitte nach der Breite der gewaehlten Ecke
+        const char* sv = getenv("SIM_BATT_STIL");
+        const int st = sv ? atoi(sv) : 0;
+        static const int16_t ew[] = {0, 82, 96, 112, 150, 112};
+        if (st >= 1 && st <= 5 && L.scr_w >= 460) {
+            const int16_t logo_rechts = L.margin + CLAWD_STILL_W;
+            const int16_t links = L.scr_w - L.margin - ew[st];
+            L.title_nudge = (int16_t)(((logo_rechts + links) / 2) - (L.scr_w / 2));
+        }
+    }
 
 }
 
@@ -515,10 +526,17 @@ static lv_obj_t* make_pill(lv_obj_t* parent, const char* text) {
 // Right-aligned as a unit so the stub lands where the old icon's edge was.
 static void rate_laden(void);
 
+#include "batt_entwurf.inc"   // ENTWURF
+
 static void battery_create(lv_obj_t* parent) {
     // Boards without battery telemetry never show the indicator (per the HAL
     // contract; previously every board drew the empty-battery glyph).
     if (!board_caps().has_battery) return;
+    if (entwurf_stil_lesen() > 0) {   // ENTWURF
+        entwurf_create(parent, entwurf_stil_lesen());
+        battery_body = e_root;
+        return;
+    }
 
     const int16_t total_w = L.batt_w + BATT_NUB_GAP + L.batt_nub_w;
     const int16_t body_x  = L.scr_w - L.margin - total_w;
@@ -1653,6 +1671,13 @@ void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) 
 
 void ui_update_battery(int percent, bool charging, bool vbus_in) {
     if (!battery_body) return;
+    if (e_stil > 0) {   // ENTWURF
+        battery_runtime_sample(percent, charging, vbus_in, idle_is_asleep(),
+                               brightness_get_stage(), lv_tick_get());
+        entwurf_update(percent, charging, vbus_in, battery_runtime_minutes());
+        apply_battery_visibility();
+        return;
+    }
 
     const int16_t innen = L.batt_w - 2 * BATT_BORDER_W;
     const int pct = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
