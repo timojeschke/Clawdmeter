@@ -249,8 +249,8 @@ static void compute_layout(const BoardCaps& c) {
     {   // ENTWURF: Titelmitte nach der Breite der gewaehlten Ecke
         const char* sv = getenv("SIM_BATT_STIL");
         const int st = sv ? atoi(sv) : 0;
-        static const int16_t ew[] = {0, 82, 96, 112, 150, 112};
-        if (st >= 1 && st <= 5 && L.scr_w >= 460) {
+        static const int16_t ew[] = {0, 82, 96, 112, 150, 112, 112, 112, 124, 112, 100};
+        if (st >= 1 && st <= 10 && L.scr_w >= 460) {
             const int16_t logo_rechts = L.margin + CLAWD_STILL_W;
             const int16_t links = L.scr_w - L.margin - ew[st];
             L.title_nudge = (int16_t)(((logo_rechts + links) / 2) - (L.scr_w / 2));

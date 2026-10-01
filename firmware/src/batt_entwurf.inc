@@ -19,7 +19,7 @@ static int e_stil = 0;
 static int entwurf_stil_lesen(void) {
     const char* v = getenv("SIM_BATT_STIL");
     int s = v ? atoi(v) : 0;
-    return (s >= 0 && s <= 5) ? s : 0;
+    return (s >= 0 && s <= 10) ? s : 0;
 }
 
 // Breite der Ecke je Variante, fuer die Titelmitte (siehe compute_layout).
@@ -30,6 +30,11 @@ static int16_t entwurf_breite(int stil) {
         case 3: return 124;
         case 4: return 150;
         case 5: return 112;
+        case 6: return 112;   // 5a
+        case 7: return 112;   // 5b
+        case 8: return 124;   // 5c
+        case 9: return 124;   // 5d
+        case 10: return 100;  // 5e
         default: return 0;
     }
 }
@@ -42,7 +47,12 @@ static lv_obj_t* e_track;        // Spur (V2, V4)
 static lv_obj_t* e_body;         // V1: Batteriekoerper, V4: Kapsel
 static lv_obj_t* e_dot;          // V4: Trenner
 static lv_obj_t* e_arc;          // V3: Ring
-static lv_obj_t* e_seg[5];       // V5: Segmente
+static lv_obj_t* e_seg[10];      // V5: Segmente
+static int       e_nseg = 5;
+static lv_obj_t* e_row;          // 5a/5b: Unterzeile als Reihe
+static lv_obj_t* e_dig[3][15];   // 5d: Pixelziffern
+static int16_t   e_dig_right = 0;
+static int16_t   e_rw = 0;       // Breite des Containers
 static lv_obj_t* e_nub;          // V1/V5: Kontaktstueck
 static int16_t   e_w = 0;
 static int16_t   e_fill_max = 0; // V1: nutzbare Fuellbreite, V2: Linienlaenge
@@ -167,15 +177,141 @@ static void e_build_v5(void) {
     e_sub = e_label(e_root, &font_styrene_14, THEME_DIM);
 }
 
+#define E_5C_KORR -1
+
+// ---------------------------------------------------------------- Untervarianten von V5
+// Gemeinsamer Pixelbatterie-Bau. Alle Masse auf einem Raster, rechte Kante
+// der Gruppe (inkl. Nippel) liegt auf der rechten Containerkante.
+static int16_t e_pix_batt(int nseg, int sw, int sh, int gap, int nubw, int nubh,
+                          int nubgap, int y, int casing_pad) {
+    e_nseg = nseg;
+    const int inner = nseg * sw + (nseg - 1) * gap;
+    const int body_w = inner + 2 * casing_pad;
+    const int grp_w = body_w + nubgap + nubw;
+    const int left = e_rw - grp_w;
+    lv_color_t empty = casing_pad ? THEME_BG : E_TRACK;
+    if (casing_pad) {
+        lv_obj_t* c = e_box(e_root, body_w, sh + 2 * casing_pad, E_TRACK, 0);
+        lv_obj_set_pos(c, left, y);
+    }
+    for (int i = 0; i < nseg; i++) {
+        e_seg[i] = e_box(e_root, sw, sh, empty, 0);
+        lv_obj_set_pos(e_seg[i], left + casing_pad + i * (sw + gap), y + casing_pad);
+    }
+    e_nub = e_box(e_root, nubw, nubh, E_TRACK, 0);
+    lv_obj_set_pos(e_nub, e_rw - nubw, y + (sh + 2 * casing_pad - nubh) / 2);
+    return left;
+}
+
+// Unterzeile als Reihe: [Prozent] [Punkt] [Rest], rechtsbuendig.
+static void e_sub_row(bool with_pct, int y) {
+    e_row = lv_obj_create(e_root);
+    lv_obj_remove_style_all(e_row);
+    lv_obj_clear_flag(e_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(e_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(e_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(e_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(e_row, 0, 0);
+    lv_obj_align(e_row, LV_ALIGN_TOP_RIGHT, 0, y);
+    if (with_pct) e_pct = e_label(e_row, &font_styrene_14, THEME_TEXT);
+    e_dot = NULL;
+    if (with_pct) e_dot = e_label(e_row, &font_styrene_14, THEME_DIM);
+    if (e_dot) { lv_label_set_text(e_dot, "\xC2\xB7"); lv_obj_set_style_pad_hor(e_dot, 5, 0); }
+    e_sub = e_label(e_row, &font_styrene_14, THEME_DIM);
+}
+
+// Pixelziffern aus dem 3x5-Raster der Uhr in splash.cpp (UHR_GLYPHEN, gleiche Werte).
+static const uint16_t E_GLYPH[10] = {
+    0x7B6F, 0x749A, 0x73E7, 0x79E7, 0x49ED, 0x79CF, 0x7BCF, 0x4927, 0x7BEF, 0x79EF,
+};
+#define E_CELL 4
+
+static void e_build_5a(void) {                // 5 Bloecke, Zahl in der Unterzeile
+    e_pix_batt(5, 8, 18, 3, 4, 8, 3, 22, 0);
+    e_sub_row(true, 51);
+}
+static void e_build_5b(void) {                // 10 schmale Bloecke
+    e_pix_batt(10, 4, 18, 2, 4, 8, 3, 22, 0);
+    e_sub_row(true, 51);
+}
+static void e_build_5c(void) {                // Zahl in Styrene neben den Bloecken
+    e_pix_batt(5, 8, 18, 3, 4, 8, 3, 22, 0);
+    e_sub_row(false, 51);
+    e_pct = e_label(e_root, &font_styrene_24, THEME_TEXT);
+}
+static void e_build_5d(void) {                // Pixelziffern neben den Bloecken
+    e_dig_right = e_pix_batt(5, 8, 20, 4, 4, 8, 4, 21, 0) - 12;
+    for (int d = 0; d < 3; d++)
+        for (int k = 0; k < 15; k++) {
+            e_dig[d][k] = e_box(e_root, E_CELL, E_CELL, THEME_TEXT, 0);
+            lv_obj_add_flag(e_dig[d][k], LV_OBJ_FLAG_HIDDEN);
+        }
+    e_sub_row(false, 51);
+}
+static void e_build_5e(void) {                // 10 Bloecke im Gehaeuse, ohne Zahl
+    e_pix_batt(10, 6, 20, 2, 6, 12, 0, 19, 3);
+    e_sub_row(false, 53);
+}
+
+static void e_pix_fill(int pct, lv_color_t col, bool tenth) {
+    int an = tenth ? (pct + 5) / 10 : (pct + 10) / 20;
+    if (pct > 0 && an < 1) an = 1;
+    const lv_color_t empty = (e_stil == 10) ? THEME_BG : E_TRACK;
+    for (int i = 0; i < e_nseg; i++) lv_obj_set_style_bg_color(e_seg[i], i < an ? col : empty, 0);
+}
+
+static void e_upd_digits(int pct, bool low) {
+    char b[8]; snprintf(b, sizeof b, "%d", pct);
+    const int n = (int)strlen(b);
+    const int w = n * 3 * E_CELL + (n - 1) * E_CELL;
+    const int x0 = e_dig_right - w;
+    for (int d = 0; d < 3; d++)
+        for (int k = 0; k < 15; k++) {
+            lv_obj_t* o = e_dig[d][k];
+            const int rx = k % 3, ry = k / 3;
+            const bool lit = d < n && (E_GLYPH[b[d] - '0'] & (1u << k));
+            if (!lit) { lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN); continue; }
+            lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(o, x0 + d * 4 * E_CELL + rx * E_CELL, 21 + ry * E_CELL);
+            lv_obj_set_style_bg_color(o, low ? THEME_RED : THEME_TEXT, 0);
+        }
+}
+
+static void e_upd_pixsub(int pct, lv_color_t col, bool low) {
+    // Reihe: Punkt und Prozent nur wenn es sie gibt
+    if (e_dot) {
+        const bool leer = lv_label_get_text(e_sub)[0] == '\0';
+        lv_obj_set_style_text_opa(e_dot, leer ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_hor(e_dot, leer ? 0 : 5, 0);
+    }
+    if (e_row) lv_obj_align(e_row, LV_ALIGN_TOP_RIGHT, 0, (e_stil == 10) ? 53 : 51);
+    switch (e_stil) {
+        case 6:  e_pix_fill(pct, col, false); break;
+        case 7:  e_pix_fill(pct, col, true);  break;
+        case 8:
+            e_pix_fill(pct, col, false);
+            lv_obj_set_style_text_color(e_pct, low ? THEME_RED : THEME_TEXT, 0);
+            // Ziffernmitte auf Blockmitte: Wert am Bild ausgemessen
+            lv_obj_align_to(e_pct, e_seg[0], LV_ALIGN_OUT_LEFT_MID, -12, E_5C_KORR);
+            break;
+        case 9:  e_pix_fill(pct, col, false); e_upd_digits(pct, low); break;
+        case 10: e_pix_fill(pct, col, true);  break;
+    }
+    if (e_stil == 6 || e_stil == 7) lv_obj_set_style_text_color(e_pct, low ? THEME_RED : THEME_TEXT, 0);
+}
+
 static void entwurf_create(lv_obj_t* parent, int stil) {
     e_stil = stil;
     e_w = entwurf_breite(stil);
+    e_nseg = 5;
     e_root = lv_obj_create(parent);
     lv_obj_remove_style_all(e_root);
     lv_obj_clear_flag(e_root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(e_root, LV_OBJ_FLAG_CLICKABLE);
     // V4 ist je nach Zeile verschieden breit; der Container nimmt das Maximum.
     const int16_t root_w = (stil == 4) ? 172 : e_w;
+    e_rw = root_w;
     lv_obj_set_size(e_root, root_w, L.content_y - E_TOP);
     lv_obj_set_pos(e_root, L.scr_w - L.margin - root_w, E_TOP);
     switch (stil) {
@@ -184,6 +320,11 @@ static void entwurf_create(lv_obj_t* parent, int stil) {
         case 3: e_build_v3(); break;
         case 4: e_build_v4(); break;
         case 5: e_build_v5(); break;
+        case 6: e_build_5a(); break;
+        case 7: e_build_5b(); break;
+        case 8: e_build_5c(); break;
+        case 9: e_build_5d(); break;
+        case 10: e_build_5e(); break;
     }
 }
 
@@ -256,7 +397,7 @@ static void entwurf_update(int percent, bool charging, bool vbus_in, int rest) {
     char buf[24];
     snprintf(buf, sizeof buf, "%d%%", pct);
     if (percent < 0) buf[0] = '\0';
-    lv_label_set_text(e_pct, buf);
+    if (e_pct) lv_label_set_text(e_pct, buf);
 
     lv_color_t sub_col = THEME_DIM;
     if (charging)                { lv_label_set_text(e_sub, "Charging"); sub_col = THEME_ACCENT; }
@@ -278,5 +419,6 @@ static void entwurf_update(int percent, bool charging, bool vbus_in, int rest) {
             e_upd_v4(pct, col, low);
             break;
         case 5: e_upd_v5(pct, col, low); break;
+        default: e_upd_pixsub(pct, col, low); break;
     }
 }
