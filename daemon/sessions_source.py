@@ -19,6 +19,8 @@ serialise to 3039 bytes, so dropping names is the normal case, not the edge.
 
 import json
 import logging
+import math
+import re
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +67,38 @@ MAX_AGE_SECONDS = 300
 REQUEST_TIMEOUT_SECONDS = 5.0
 
 
+# Ein "#" beginnt nur am Zeilenanfang oder nach Leerraum einen Kommentar. Ein
+# Token darf ein "#" enthalten ("ab#cd") und darf nicht dort abgeschnitten
+# werden — dann waere der Zugang still falsch statt sichtbar kaputt.
+_KOMMENTAR = re.compile(r"(?:^|\s)#.*")
+
+
+def lies_konfig_eintraege(config_file) -> list[tuple[str, str]]:
+    """Die `schluessel = wert`-Zeilen der Konfig als (kleingeschriebener Schluessel, Wert).
+
+    Gelesen wird mit BOM-Toleranz und ohne Abbruch bei fremden Bytes: Der
+    Windows-Editor schreibt gern ein BOM oder cp1252, und ein einziges "ue" in
+    einem Kommentar darf nicht die ganze Konfig unlesbar machen. Fehlt die
+    Datei oder ist sie nicht lesbar, kommt eine leere Liste — jede Option
+    faellt dann auf ihren Standard.
+    """
+    try:
+        if not config_file.exists():
+            return []
+        text = config_file.read_text(encoding="utf-8-sig", errors="replace")
+    except (OSError, ValueError):
+        return []
+
+    eintraege = []
+    for zeile in text.splitlines():
+        zeile = _KOMMENTAR.sub("", zeile).strip()
+        if "=" not in zeile:
+            continue
+        schluessel, wert = zeile.split("=", 1)
+        eintraege.append((schluessel.strip().lower(), wert.strip()))
+    return eintraege
+
+
 def read_sessions_config(config_file) -> tuple[str | None, str | None]:
     """Read `sessions_url` and `sessions_token` from the config file.
 
@@ -72,21 +106,11 @@ def read_sessions_config(config_file) -> tuple[str | None, str | None]:
     half-configured counts as off.
     """
     url = token = None
-    try:
-        if not config_file.exists():
-            return None, None
-        for line in config_file.read_text(encoding="utf-8").splitlines():
-            line = line.split("#", 1)[0].strip()
-            if "=" not in line:
-                continue
-            key, val = line.split("=", 1)
-            key = key.strip().lower()
-            if key == "sessions_url":
-                url = val.strip() or None
-            elif key == "sessions_token":
-                token = val.strip() or None
-    except OSError:
-        return None, None
+    for key, val in lies_konfig_eintraege(config_file):
+        if key == "sessions_url":
+            url = val or None
+        elif key == "sessions_token":
+            token = val or None
 
     if not url or not token:
         return None, None
@@ -209,6 +233,17 @@ def _serialised_size(payload: dict) -> int:
                           ensure_ascii=False).encode("utf-8"))
 
 
+def _zaehlwert(wert) -> int:
+    """Ein Zaehlwert aus der Serverantwort; alles, was keine Zahl ist, zaehlt 0.
+
+    Die Antwort kommt von aussen: ein `null` oder ein Text darf nicht den
+    Sendeweg zum Absturz bringen, nur weil ein Zaehler fehlt.
+    """
+    if isinstance(wert, bool) or not isinstance(wert, (int, float)):
+        return 0
+    return int(wert) if math.isfinite(wert) else 0
+
+
 def merge_into_payload(payload: dict, daten: dict | None,
                        budget: int = PAYLOAD_LIMIT_BYTES) -> dict:
     """Add session fields to the usage payload, trimming names to fit.
@@ -234,10 +269,10 @@ def merge_into_payload(payload: dict, daten: dict | None,
     veraltet = isinstance(alter, int) and alter > MAX_AGE_SECONDS
 
     merged = dict(payload)
-    merged["sw"] = int(anzahl.get("wartet", 0))
-    merged["sa"] = int(anzahl.get("arbeitet", 0))
-    merged["sb"] = int(anzahl.get("hintergrund", 0))
-    merged["sg"] = int(anzahl.get("geparkt", 0))
+    merged["sw"] = _zaehlwert(anzahl.get("wartet"))
+    merged["sa"] = _zaehlwert(anzahl.get("arbeitet"))
+    merged["sb"] = _zaehlwert(anzahl.get("hintergrund"))
+    merged["sg"] = _zaehlwert(anzahl.get("geparkt"))
 
     # Stale data: counts are still roughly right, a name list is not. Showing
     # a session as waiting when it finished four minutes ago sends the user to

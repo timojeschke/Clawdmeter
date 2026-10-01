@@ -26,7 +26,7 @@ cmdPfad = heim & "\claude-start.cmd"
 ' Lieber einmal sichtbar scheitern als dauerhaft unsichtbar nichts tun.
 If Not fso.FileExists(cmdPfad) Then
     MsgBox "claude-start.cmd nicht gefunden:" & vbCrLf & cmdPfad, _
-           vbCritical, "Clawdmeter — Autostart"
+           vbCritical, "Clawdmeter - Autostart"
     WScript.Quit 1
 End If
 

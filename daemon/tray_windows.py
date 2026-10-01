@@ -203,8 +203,10 @@ def main() -> None:
         # traceback, flip the tray to an actionable error, then restart the loop
         # with capped backoff. A CLEAN return means Quit was requested (main()'s
         # loop exited on stop_event), so we stay down and do NOT restart.
-        backoff = 2
+        backoff_start = 2
+        backoff = backoff_start
         while not _quit_requested.is_set():
+            laufbeginn = time.time()
             try:
                 _asyncio.run(daemon_main(tray_state=ts))
                 return  # clean exit == Quit requested; stay down
@@ -215,6 +217,11 @@ def main() -> None:
                 ts.set_error(f"daemon crashed: {type(e).__name__}")
             if _quit_requested.is_set():
                 return
+            # Ein Lauf, der vor dem Absturz erfolgreich geschrieben hat (last_sync
+            # stammt aus diesem Lauf), war gesund: Der naechste Absturz Tage
+            # spaeter soll nicht mit dem Backoff der vorigen Absturzserie warten.
+            if ts.last_sync is not None and ts.last_sync >= laufbeginn:
+                backoff = backoff_start
             daemon_log(f"Restarting daemon loop in {backoff}s after crash")
             # Interruptible sleep: a Quit during backoff wakes us immediately.
             if _quit_requested.wait(timeout=backoff):
@@ -240,10 +247,19 @@ def main() -> None:
         # Set _quit_requested FIRST so the supervisor loop in _run_daemon never
         # resurrects the daemon after we signal stop (Quit must be final).
         _quit_requested.set()
-        if ts.loop is not None and ts.stop_event is not None:
-            ts.loop.call_soon_threadsafe(ts.stop_event.set)
-            daemon_thread.join(timeout=6.0)
-        icon_ref.stop()
+        try:
+            if ts.loop is not None and ts.stop_event is not None:
+                try:
+                    ts.loop.call_soon_threadsafe(ts.stop_event.set)
+                except RuntimeError:
+                    # Die Schleife ist schon geschlossen (der Daemon lief gerade
+                    # aus oder war abgestuerzt): Es gibt nichts mehr zu stoppen.
+                    pass
+                daemon_thread.join(timeout=6.0)
+        finally:
+            # Das Icon muss in jedem Fall verschwinden — sonst bliebe nach Quit
+            # ein toter Eintrag im Tray, und der Prozess liefe weiter.
+            icon_ref.stop()
 
     def _on_toggle(_icon_ref, _item) -> None:
         if autostart.is_enabled():
