@@ -928,8 +928,7 @@ static void update_sessions_screen(const UsageData* d) {
     //
     // "Running" zaehlt Arbeitende UND Hintergrund-Sessions zusammen. Timo,
     // 2026-09-30: Sessions mit Hintergrundaufgaben sollen als laufend
-    // zaehlen, aber in der Namensliste sichtbar abgesetzt bleiben (gedimmt) —
-    // siehe die Farbwahl unten.
+    // zaehlen. In der Liste stehen sie seit dem 2026-10-01 wie alle anderen.
     const int gesamt = d->sessions_waiting + d->sessions_working
                      + d->sessions_parked + d->sessions_background;
     const int laufend = d->sessions_working + d->sessions_background;
@@ -943,17 +942,13 @@ static void update_sessions_screen(const UsageData* d) {
                         ? d->sessions_name_count : sess_max_zeilen;
     const int zusaetzlich_verborgen = d->sessions_name_count - gezeigt;
 
-    // Die Namen kommen bereits geordnet an — erst die arbeitenden, dann die im
-    // Hintergrund (sessions_source.py::_laufende_namen). Eintrag i gehoert
-    // also genau dann zum Hintergrund, wenn i >= sessions_working. Die Farbe
-    // wird bei JEDEM Update neu gesetzt, nicht nur beim Aufbau: Die Etiketten
-    // werden wiederverwendet, und ohne das wuerde ein Name, der von
-    // Hintergrund zu arbeitend wechselt, gedimmt stehen bleiben.
+    // Die Namen kommen geordnet an — erst die arbeitenden, dann die im
+    // Hintergrund (sessions_source.py::_laufende_namen) — und stehen alle in
+    // derselben Farbe. Die Hintergrund-Namen waren einen Tag lang gedimmt;
+    // Timo, 2026-10-01: "sollen einfach wie die anderen angezeigt werden".
     for (int i = 0; i < SESSIONS_MAX_NAMES; i++) {
         if (i < gezeigt) {
             lv_label_set_text(sess_name_lbl[i], d->sessions_names[i]);
-            lv_obj_set_style_text_color(sess_name_lbl[i],
-                i >= d->sessions_working ? COL_DIM : COL_TEXT, 0);
             lv_obj_clear_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(sess_name_lbl[i], LV_OBJ_FLAG_HIDDEN);
