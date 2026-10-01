@@ -52,5 +52,7 @@ bool battery_runtime_neue_messung(int* stage, uint32_t* ms_pro_prozent,
                                   uint32_t* spanne_ms, int* abfall);
 
 // Fuer die serielle Diagnose: Messanker (Prozent, -1 = keiner) und dessen Alter.
+// Der Anker entsteht erst an der ersten Prozentkante nach einem Reset; davor
+// ist er -1, auch wenn minutes() schon aus Rate oder Annahme hochrechnet.
 int      battery_runtime_anker_pct(void);
 uint32_t battery_runtime_anker_alter_ms(uint32_t now_ms);

@@ -1,9 +1,17 @@
 #include "battery_runtime.h"
 
 // The anchor is the oldest observation still worth measuring against: the
-// moment the device last started discharging. Slope is computed from that
-// anchor to now, which smooths the PMU's coarse steps far better than
-// comparing consecutive samples would.
+// moment the charge first dropped below the level seen after the last reset.
+// Slope is computed from that anchor to now, which smooths the PMU's coarse
+// steps far better than comparing consecutive samples would.
+//
+// Der Anker entsteht erst an einer Prozentkante, nicht beim ersten Sample.
+// Der PMU meldet ganze Prozent: Das erste Sample nach Abstecken, Stufenwechsel
+// oder Aufwachen liegt irgendwo mitten in einem Prozentpunkt, und nach dem
+// Abstecken steht der Akku obendrein eine Weile auf 100 %. Bei rund 16 Minuten
+// je Prozent (Geraetemessung 2026-10-01) ist ein Anker mitten im Prozentpunkt
+// ein Fehler von bis zu 16 Minuten auf ein Mindestfenster von 32 Minuten. Der
+// Moment, in dem der Wert springt, ist dagegen auf die Abtastung genau bekannt.
 
 // Zuletzt gemessene Verbrauchsrate je Helligkeitsstufe, als Millisekunden je
 // Prozentpunkt (0 = fuer diese Stufe nie gemessen). Ueberlebt Neustart und
@@ -16,15 +24,18 @@
 static uint32_t raten_ms[BATTERY_RUNTIME_STAGES] = {0, 0, 0, 0};
 
 // Startwert fuer den allerersten Akkubetrieb, solange nichts gemessen und
-// nichts gespeichert ist: 108 Sekunden je Prozentpunkt, also rund drei Stunden
+// nichts gespeichert ist: 900 Sekunden je Prozentpunkt, also rund 25 Stunden
 // fuer eine volle Ladung.
 //
-// Das ist eine ANNAHME, keine Messung — die einzige Zahl in diesem Modul, die
-// nicht vom Geraet stammt. Sie steht hier, weil "misst..." laut Timo schlechter
-// ist als eine Zahl, die sich selbst korrigiert: Nach zwei Prozent Abfall,
-// also wenigen Minuten, ersetzt die erste echte Messung sie und wird
-// gespeichert. Danach wird dieser Wert fuer diese Stufe nie wieder benutzt.
-#define ANNAHME_RATE_MS (108u * 1000u)
+// Das ist eine ANNAHME, keine eigene Messung. Der alte Wert (108 s je Prozent,
+// drei Stunden) war geschaetzt und lag um den Faktor 9 daneben. Der neue stuetzt
+// sich auf die Geraetemessung vom 2026-10-01 (966163 ms je Prozent auf Stufe 1,
+// hochgerechnet rund 27 Stunden) und auf Timos Einschaetzung "so 27 Stunden
+// koennte hinkommen, vielleicht etwas weniger" — deshalb bewusst darunter.
+// Er gilt weiterhin nur, bis eine eigene Messung vorliegt: Nach zwei Prozent
+// Abfall ersetzt die erste echte Messung ihn und wird gespeichert. Danach wird
+// dieser Wert fuer diese Stufe nie wieder benutzt.
+#define ANNAHME_RATE_MS (900u * 1000u)
 
 static bool     gesperrt   = false;   // Kabel steckt: keine Zahl, keine Messung
 static uint32_t anker_ms   = 0;
@@ -58,7 +69,8 @@ static int      messung_abfall  = 0;
 #define MIN_FENSTER_MS   (3u * 60u * 1000u)
 
 // A reading above the anchor means the pack recovered (cable, load dropped,
-// or simply PMU jitter). Re-anchor instead of computing a negative slope.
+// or simply PMU jitter). Drop the anchor and wait for the next edge instead of
+// computing a negative slope.
 #define ANSTIEG_TOLERANZ 1
 
 static int stufe_begrenzen(int stage) {
@@ -103,6 +115,14 @@ void battery_runtime_sample(int percent, bool charging, bool vbus_in,
     if (ist_gesperrt || asleep) return;   // hier gibt es nichts zu messen
 
     if (anker_pct < 0) {
+        // Warten auf die erste Prozentkante. Das erste Sample merkt sich nur den
+        // Ladestand (damit minutes() aus Rate oder Annahme hochrechnen kann);
+        // ein hoeherer Wert hebt ihn an, ein gleicher aendert nichts. Erst ein
+        // Wert UNTER dem gemerkten ist der Moment, in dem der Prozentpunkt kippt.
+        if (letzte_pct < 0 || percent >= letzte_pct) {
+            letzte_pct = percent;
+            return;
+        }
         anker_ms   = now_ms;
         anker_pct  = percent;
         letzte_pct = percent;
@@ -110,9 +130,9 @@ void battery_runtime_sample(int percent, bool charging, bool vbus_in,
     }
 
     if (percent > anker_pct + ANSTIEG_TOLERANZ) {
+        // Erholt: Anker verwerfen und zurueck in "warte auf Kante", mit dem
+        // neuen Ladestand als gemerktem Wert.
         battery_runtime_reset();
-        anker_ms   = now_ms;
-        anker_pct  = percent;
         letzte_pct = percent;
         return;
     }

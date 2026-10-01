@@ -313,6 +313,7 @@ static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    
 // take its colour from theme.h instead of being baked into an image.
 #define BATT_BORDER_W  2
 #define BATT_LOW_PCT  10   // below this the fill turns red
+#define BATT_STUNDEN_AB_MIN 120   // ab hier zeigt die Restlaufzeit Stunden statt Minuten
 // Solid terracotta, the same accent the usage bars use — the header then reads
 // as part of the same design instead of a grey box borrowed from elsewhere.
 // Durchmesser des Rings neben der Modellquote, und die Dicke seines Bogens.
@@ -1696,7 +1697,16 @@ void ui_update_battery(int percent, bool charging, bool vbus_in) {
             // aber es ist dort ohnehin klar, dass eine Restlaufzeit geschaetzt
             // ist, und auf einem Tischdisplay zaehlt jedes Zeichen. Timo,
             // 2026-09-25: "lass da ca. weg bei der Schaetzung."
-            lv_label_set_text_fmt(battery_sub_lbl, "%d min", rest);
+            //
+            // Ab BATT_STUNDEN_AB_MIN Stunden statt Minuten: "1562 min" liest
+            // niemand, und eine Schaetzung aus ganzzahligen Prozent
+            // rechtfertigt bei ueber zwei Stunden keine Minuten. Kaufmaennisch
+            // gerundet: (rest + 30) / 60.
+            if (rest >= BATT_STUNDEN_AB_MIN) {
+                lv_label_set_text_fmt(battery_sub_lbl, "%d h", (rest + 30) / 60);
+            } else {
+                lv_label_set_text_fmt(battery_sub_lbl, "%d min", rest);
+            }
         } else {
             lv_label_set_text(battery_sub_lbl, "");
         }
