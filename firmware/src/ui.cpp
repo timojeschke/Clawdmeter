@@ -1137,38 +1137,53 @@ void ui_init(void) {
     rate_laden();
 }
 
+// Die Fable-Zeile gehoert zur Live-Ansicht. Timo, 2026-10-01: Ohne Internet
+// am PC zeigte die Usage-Seite das Maennchen, unten aber weiter den alten
+// Fable-Ring statt "No data" — die Zeile hing nur an der letzten Nutzlast,
+// nicht daran, ob die Daten noch frisch sind.
+static bool scoped_vorhanden = false;
+
+static void fable_zeile_zeigen(void) {
+    if (!lbl_scoped) return;
+    const bool zeigen = scoped_vorhanden && view_state == 2;
+    if (!zeigen) {
+        lv_obj_add_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
+        if (scoped_ring) lv_obj_add_flag(scoped_ring, LV_OBJ_FLAG_HIDDEN);
+        if (lbl_anim) lv_obj_clear_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
+    if (lbl_anim) lv_obj_add_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
+    if (scoped_ring) {
+        lv_obj_clear_flag(scoped_ring, LV_OBJ_FLAG_HIDDEN);
+        // Erst das Etikett ausmessen lassen, sonst richtet sich der
+        // Ring nach einer Breite von null aus und sitzt daneben.
+        // Die Feinkorrektur nach unten gleicht aus, dass die Ziffern
+        // ihre Grundlinie oberhalb der Zeilenmitte haben — ohne sie
+        // schwebt der Ring sichtbar zu hoch.
+        lv_obj_update_layout(lbl_scoped);
+        lv_obj_align_to(scoped_ring, lbl_scoped,
+                        LV_ALIGN_OUT_LEFT_MID, -12, SCOPED_RING_Y_KORR);
+    }
+}
+
 void ui_update(const UsageData* data) {
     if (!data->valid) return;
     // A real number beats a decorative status line: when the account has a
     // per-model weekly quota, it takes that slot instead.
-    if (lbl_scoped) {
-        if (data->scoped_valid) {
-            lv_label_set_text_fmt(lbl_scoped, "%s  %d%%", data->scoped_name, data->scoped_pct);
-            lv_obj_clear_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
-            if (scoped_ring) {
-                // Gleiche Schwellen wie die Balken: der Ring sagt auf einen
-                // Blick, wie es um die Quote steht, nicht nur dass es sie gibt.
-                lv_arc_set_value(scoped_ring, data->scoped_pct);
-                lv_obj_set_style_arc_color(scoped_ring,
-                                           pct_color((float)data->scoped_pct),
-                                           LV_PART_INDICATOR);
-                lv_obj_clear_flag(scoped_ring, LV_OBJ_FLAG_HIDDEN);
-                // Erst das Etikett ausmessen lassen, sonst richtet sich der
-                // Ring nach einer Breite von null aus und sitzt daneben.
-                // Die Feinkorrektur nach unten gleicht aus, dass die Ziffern
-                // ihre Grundlinie oberhalb der Zeilenmitte haben — ohne sie
-                // schwebt der Ring sichtbar zu hoch.
-                lv_obj_update_layout(lbl_scoped);
-                lv_obj_align_to(scoped_ring, lbl_scoped,
-                                LV_ALIGN_OUT_LEFT_MID, -12, SCOPED_RING_Y_KORR);
-            }
-            if (lbl_anim) lv_obj_add_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
-            if (scoped_ring) lv_obj_add_flag(scoped_ring, LV_OBJ_FLAG_HIDDEN);
-            if (lbl_anim) lv_obj_clear_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
+    scoped_vorhanden = data->scoped_valid;
+    if (lbl_scoped && data->scoped_valid) {
+        lv_label_set_text_fmt(lbl_scoped, "%s  %d%%", data->scoped_name, data->scoped_pct);
+        if (scoped_ring) {
+            // Gleiche Schwellen wie die Balken: der Ring sagt auf einen
+            // Blick, wie es um die Quote steht, nicht nur dass es sie gibt.
+            lv_arc_set_value(scoped_ring, data->scoped_pct);
+            lv_obj_set_style_arc_color(scoped_ring,
+                                       pct_color((float)data->scoped_pct),
+                                       LV_PART_INDICATOR);
         }
     }
+    fable_zeile_zeigen();
     letzte_daten = *data;
     update_sessions_screen(data);
     data_ok = data->ok;
@@ -1270,6 +1285,7 @@ static void update_view_state(void) {
     }
     if (v == view_state) return;
     view_state = v;
+    fable_zeile_zeigen();
     lv_obj_add_flag(pair_group, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(idle_group, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(usage_group, LV_OBJ_FLAG_HIDDEN);
