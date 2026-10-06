@@ -18,6 +18,7 @@ zweites Mal gebaut zu werden.
 
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -86,6 +87,20 @@ def _prozess_lebt(pid: int) -> bool | None:
     return True
 
 
+def _alter_sekunden(gestempelt, jetzt: float) -> float | None:
+    """Alter eines Zeitstempels in Sekunden, None bei Fremddaten.
+
+    Die Zeitstempel stehen in Millisekunden. Ein Text, eine Liste oder eine
+    Unendlichkeit ist keine Zeit: Dann entscheidet der Aufrufer über diesen
+    einen Eintrag, statt dass `float()` die ganze Liste kippt.
+    """
+    if isinstance(gestempelt, bool) or not isinstance(gestempelt, (int, float)):
+        return None
+    if not math.isfinite(gestempelt):
+        return None
+    return jetzt - gestempelt / 1000.0
+
+
 def _ist_aktuell(eintrag: dict, jetzt: float) -> bool:
     """Lebt der Prozess — oder ist die Datei wenigstens frisch genug?"""
     try:
@@ -98,9 +113,8 @@ def _ist_aktuell(eintrag: dict, jetzt: float) -> bool:
     if lebt is not None:
         return lebt
     gestempelt = eintrag.get("updatedAt") or eintrag.get("statusUpdatedAt") or 0
-    # Die Zeitstempel stehen in Millisekunden.
-    alter = jetzt - float(gestempelt) / 1000.0
-    return alter < VERWAIST_NACH_SEKUNDEN
+    alter = _alter_sekunden(gestempelt, jetzt)
+    return alter is not None and alter < VERWAIST_NACH_SEKUNDEN
 
 
 def _sessions_verzeichnis() -> Path:
@@ -137,14 +151,37 @@ def lies_lokale_sessions(verzeichnis: Path | None = None,
             continue
         if not _ist_aktuell(eintrag, jetzt):
             continue
-        zustand = ZUSTAND_ABBILDUNG.get(str(eintrag.get("status") or ""))
         gestempelt = eintrag.get("statusUpdatedAt") or eintrag.get("updatedAt") or 0
+        alter = _alter_sekunden(gestempelt, jetzt)
+        if alter is None:
+            continue
+        zustand = ZUSTAND_ABBILDUNG.get(str(eintrag.get("status") or ""))
         sessions.append({
             "name": name,
             "zustand": zustand or "geparkt",
-            "seit_sekunden": max(0, int(jetzt - float(gestempelt) / 1000.0)),
+            "seit_sekunden": max(0, int(alter)),
         })
     return sessions
+
+
+def _server_session(eintrag) -> dict | None:
+    """Ein Eintrag der Serverantwort in sortierbarer Form, None bei Fremddaten.
+
+    Die Antwort kommt von aussen: ein Eintrag, der kein Wörterbuch ist, oder
+    ein `seit_sekunden` ohne Zahl würde beim Sortieren werfen und den Sendeweg
+    mitreißen. Kaputte Einträge fallen weg, der Rest der Liste bleibt.
+    """
+    if not isinstance(eintrag, dict):
+        return None
+    seit = eintrag.get("seit_sekunden", 0)
+    if isinstance(seit, bool) or not isinstance(seit, (int, float)) \
+            or not math.isfinite(seit):
+        seit = 0
+    name, zustand = eintrag.get("name", ""), eintrag.get("zustand", "")
+    return {**eintrag,
+            "name": name if isinstance(name, str) else "",
+            "zustand": zustand if isinstance(zustand, str) else "",
+            "seit_sekunden": seit}
 
 
 def ergaenze(daten: dict | None, lokale: list[dict] | None = None,
@@ -169,8 +206,10 @@ def ergaenze(daten: dict | None, lokale: list[dict] | None = None,
         return dict(daten)
 
     vorhanden = daten.get("sessions")
-    sessions = (list(vorhanden) if isinstance(vorhanden, list) else []) \
-        + list(sessions_lokal)
+    if not isinstance(vorhanden, list):
+        vorhanden = []
+    bereinigt = (_server_session(e) for e in vorhanden)
+    sessions = [e for e in bereinigt if e is not None] + list(sessions_lokal)
 
     # Arbeitende zuerst, dann Hintergrund, darunter die zuletzt gewechselten —
     # dieselbe Reihenfolge wie im Sammler, damit die Liste auf dem Gerät nicht
