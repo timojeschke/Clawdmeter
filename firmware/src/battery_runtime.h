@@ -42,6 +42,15 @@ int  battery_runtime_minutes(void);
 // Der Aufrufer legt sie beim Start aus dem NVS hinein und schreibt sie zurueck,
 // wenn eine neue Messung gemeldet wird — dieses Modul kennt keinen Speicher und
 // bleibt so testbar.
+//
+// Plausibilitaetsgrenzen einer Rate in ms je Prozentpunkt. Darunter waere der
+// Akku in unter 100 min leer, darueber haelt er laenger als rund 83 Stunden —
+// beides ist ein Messfehler, kein Verbrauch (ein verfaelschter NVS-Wert lag
+// einmal bei 5846863 ms/%). Raten ausserhalb werden weder uebernommen noch
+// gespeichert; 0 bleibt "unbekannt" und ist erlaubt.
+#define BATTERY_RUNTIME_RATE_MIN_MS    60000u     // 100 % in 100 min
+#define BATTERY_RUNTIME_RATE_MAX_MS  3000000u     // 100 % in rund 83 h
+bool     battery_runtime_rate_plausibel(uint32_t ms_pro_prozent);
 void     battery_runtime_set_rate(int stage, uint32_t ms_pro_prozent);
 uint32_t battery_runtime_rate(int stage);
 

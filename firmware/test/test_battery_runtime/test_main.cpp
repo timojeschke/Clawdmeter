@@ -325,6 +325,42 @@ int main() {
     probe(76, false, true, false, 2, 12 * MINUTE);   // Kabel: Anker verworfen
     CHECK(battery_runtime_anker_pct() == -1);
 
+    // --- Plausibilitaetsgrenzen --------------------------------------------
+    // Gespeicherte Rate zu klein (59999 < 60000 ms/%) oder zu gross (3000001):
+    // wird nicht uebernommen, die Stufe bleibt "unbekannt".
+    frisch();
+    battery_runtime_set_rate(1, 59999u);
+    CHECK(battery_runtime_rate(1) == 0u);
+    battery_runtime_set_rate(1, 3000001u);
+    CHECK(battery_runtime_rate(1) == 0u);
+    battery_runtime_set_rate(1, 60000u);       // die Grenzen selbst sind erlaubt
+    CHECK(battery_runtime_rate(1) == 60000u);
+    battery_runtime_set_rate(1, 3000000u);
+    CHECK(battery_runtime_rate(1) == 3000000u);
+    battery_runtime_set_rate(1, 3000001u);     // ausserhalb: alter Wert bleibt
+    CHECK(battery_runtime_rate(1) == 3000000u);
+
+    // Neue Messung zu klein: 100 @ 0 wird gemerkt, 99 @ 1 min ist die Kante,
+    // 97 @ 2 min = 2 % in 1 min = 30000 ms/% -> verworfen: keine Rate, keine
+    // Flanke, Restlaufzeit weiter aus der Annahme (15 min * 97 = 1455).
+    frisch();
+    entlaedt(100, 0);
+    entlaedt(99, 1 * MINUTE);
+    entlaedt(97, 2 * MINUTE);
+    CHECK(battery_runtime_rate(2) == 0u);
+    { int s; uint32_t r, sp; int a; CHECK(!battery_runtime_neue_messung(&s, &r, &sp, &a)); }
+    CHECK(battery_runtime_minutes() == 1455);
+
+    // Neue Messung zu gross: 98 @ 0 wird gemerkt, 97 @ 10 h ist die Kante,
+    // 95 @ 80 h = 2 % in 70 h = 126 Mio ms/% -> verworfen (15 min * 95 = 1425).
+    frisch();
+    entlaedt(98, 0);
+    entlaedt(97, 10 * 60 * MINUTE);
+    entlaedt(95, 80 * 60 * MINUTE);
+    CHECK(battery_runtime_rate(2) == 0u);
+    { int s; uint32_t r, sp; int a; CHECK(!battery_runtime_neue_messung(&s, &r, &sp, &a)); }
+    CHECK(battery_runtime_minutes() == 1425);
+
     if (failures == 0) printf("battery_runtime: alle Faelle bestanden\n");
     else               printf("battery_runtime: %d Fehler\n", failures);
     return failures != 0;

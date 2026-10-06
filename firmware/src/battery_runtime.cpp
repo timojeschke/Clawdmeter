@@ -146,6 +146,7 @@ void battery_runtime_sample(int percent, bool charging, bool vbus_in,
     // arithmetic throughout — this runs on a microcontroller and the result
     // is rounded to a coarse display anyway.
     const uint32_t ms_pro_prozent = spanne_ms / (uint32_t)abfall;
+    if (!battery_runtime_rate_plausibel(ms_pro_prozent)) return;   // Messfehler verwerfen
     raten_ms[stage] = ms_pro_prozent;        // fuer diese Stufe merken
     messung_neu    = true;
     messung_stufe  = stage;
@@ -183,8 +184,14 @@ int battery_runtime_minutes(void) {
     return (int)(rest_ms / 60000u);
 }
 
+bool battery_runtime_rate_plausibel(uint32_t ms_pro_prozent) {
+    return ms_pro_prozent >= BATTERY_RUNTIME_RATE_MIN_MS &&
+           ms_pro_prozent <= BATTERY_RUNTIME_RATE_MAX_MS;
+}
+
 void battery_runtime_set_rate(int stage, uint32_t ms_pro_prozent) {
     if (stage < 0 || stage >= BATTERY_RUNTIME_STAGES) return;
+    if (ms_pro_prozent != 0 && !battery_runtime_rate_plausibel(ms_pro_prozent)) return;
     raten_ms[stage] = ms_pro_prozent;
 }
 

@@ -1392,7 +1392,10 @@ static void rate_laden(void) {
     Preferences prefs;
     prefs.begin("clawdmeter", false);
     for (int i = 0; i < BATTERY_RUNTIME_STAGES; i++) {
-        const uint32_t rate = prefs.getULong(RATE_SCHLUESSEL[i], 0);
+        uint32_t rate = prefs.getULong(RATE_SCHLUESSEL[i], 0);
+        // Unplausibler NVS-Wert gilt als unbekannt und wird bei der naechsten
+        // Messung ueberschrieben (gesichert == 0 schreibt immer).
+        if (!battery_runtime_rate_plausibel(rate)) rate = 0;
         battery_runtime_set_rate(i, rate);
         rate_zuletzt_gesichert[i] = rate;
     }
