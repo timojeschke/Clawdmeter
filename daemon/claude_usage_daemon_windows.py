@@ -31,6 +31,7 @@ try:
     from daemon import lokale_sessions
     from daemon.sessions_source import (
         PAYLOAD_LIMIT_GROSS,
+        SESSION_FELDER,
         fetch_sessions,
         lies_konfig_eintraege,
         merge_into_payload,
@@ -42,6 +43,7 @@ except ImportError:
     import lokale_sessions
     from sessions_source import (
         PAYLOAD_LIMIT_GROSS,
+        SESSION_FELDER,
         fetch_sessions,
         lies_konfig_eintraege,
         merge_into_payload,
@@ -626,7 +628,7 @@ class Session:
                 return kleiner
 
         ohne_sessions = {k: v for k, v in payload.items()
-                         if k not in ("sw", "sa", "sg", "sn", "sx")}
+                         if k not in SESSION_FELDER}
         if len(ohne_sessions) == len(payload):
             return None
         log("Write failed with session data — retrying without it.")

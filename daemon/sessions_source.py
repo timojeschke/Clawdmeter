@@ -47,14 +47,18 @@ PAYLOAD_LIMIT_BYTES = 230
 PAYLOAD_LIMIT_GROSS = 460
 
 # Long session names ("Stötefalke - Webseite Personal Training") eat the budget
-# without adding information — the first words identify the session. Every
-# umlaut costs six bytes here, not two: the payload is serialised with
-# ensure_ascii, so "ö" travels as ö.
+# without adding information — the first words identify the session. The
+# payload is serialised with ensure_ascii=False, so an umlaut costs two bytes
+# as UTF-8; the budget is measured on exactly that (see _serialised_size).
 # Kandidaten fuer die Namenslaenge, von lang nach kurz durchprobiert. Oben
 # beginnt es dort, wo auch lange Projektnamen noch unterscheidbar sind; unten
 # endet es, wo ein Name nichts mehr aussagt.
 NAME_LAENGEN = (34, 30, 26, 22, 18, 14)
-MAX_NAME_CHARS = NAME_LAENGEN[0]
+
+# Alle Felder, die die Sessionliste zur Nutzlast beisteuert. Die Schreibstufe
+# "ohne Sessions" im Daemon streicht genau diese — eine zweite, handgepflegte
+# Aufzählung dort ließ `sb` stehen, als das Feld dazukam.
+SESSION_FELDER = ("sw", "sa", "sb", "sg", "sn", "sx")
 
 # One character, so the cut costs the name only one letter. Two bytes over the
 # wire now that the payload travels as UTF-8 — as three dots it would be three.
@@ -266,7 +270,8 @@ def merge_into_payload(payload: dict, daten: dict | None,
         return dict(payload)
 
     alter = daten.get("alter_sekunden")
-    veraltet = isinstance(alter, int) and alter > MAX_AGE_SECONDS
+    veraltet = (isinstance(alter, (int, float)) and not isinstance(alter, bool)
+                and alter > MAX_AGE_SECONDS)
 
     merged = dict(payload)
     merged["sw"] = _zaehlwert(anzahl.get("wartet"))

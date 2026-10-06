@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from daemon.sessions_source import (
-    MAX_NAME_CHARS,
+    MAX_AGE_SECONDS,
     PAYLOAD_LIMIT_BYTES,
     fetch_sessions,
     merge_into_payload,
@@ -88,13 +88,13 @@ def test_vollstaendige_konfiguration_wird_gelesen(tmp_path):
 # --- Abruf -----------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "bezeichnung,antwort",
+    "antwort",
     [
-        ("HTTP 401", MagicMock(status_code=401)),
-        ("HTTP 503", MagicMock(status_code=503)),
+        pytest.param(MagicMock(status_code=401), id="HTTP 401"),
+        pytest.param(MagicMock(status_code=503), id="HTTP 503"),
     ],
 )
-def test_fehlerhafte_antworten_ergeben_none(bezeichnung, antwort):
+def test_fehlerhafte_antworten_ergeben_none(antwort):
     client = MagicMock()
     client.get = AsyncMock(return_value=antwort)
     import asyncio
@@ -311,9 +311,7 @@ class _AttrappeClient:
 
 
 def _session(client):
-    sitzung = windows_daemon.Session.__new__(windows_daemon.Session)
-    sitzung.client = client
-    return sitzung
+    return windows_daemon.Session(client)
 
 
 @nur_mit_bleak
@@ -430,3 +428,24 @@ def test_namen_bekommen_den_platz_der_uebrig_ist():
     # werden."
     r = merge_into_payload(BASIS, _stand(["Stoetefalke - Webseite Fachbuecher"]))
     assert r["sn"] == ["Stoetefalke - Webseite Fachbuecher"]
+
+
+# --- Fremddaten in der Serverantwort ---------------------------------------
+
+def test_veraltetes_alter_gilt_auch_als_float():
+    # Ein Float darf nicht als frisch durchrutschen, nur weil er kein int ist.
+    r = merge_into_payload(BASIS, _stand(["A"], alter=MAX_AGE_SECONDS + 0.5))
+    assert "sn" not in r
+    assert r["sx"] == 1
+
+
+@nur_mit_bleak
+def test_stufe_ohne_sessions_streicht_auch_den_hintergrundzaehler():
+    import asyncio
+    client = _AttrappeClient(schlaegt_fehl_ab=100)
+    nutzlast = {"s": 37, "sw": 5, "sa": 0, "sb": 2, "sg": 24,
+                "sn": ["A" * 22] * 5, "sx": 1}
+
+    erfolg = asyncio.run(_session(client).write_payload(nutzlast))
+
+    assert erfolg == {"s": 37}

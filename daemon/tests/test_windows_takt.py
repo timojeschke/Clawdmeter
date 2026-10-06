@@ -20,8 +20,6 @@ import daemon.claude_usage_daemon_windows as mod
 from daemon.claude_usage_daemon_windows import (
     HERZSCHLAG_S,
     NUTZUNG_GILT_S,
-    POLL_INTERVAL,
-    POLL_WIEDERHOLUNG_NACH_FEHLER_S,
     Session,
     basis_nutzlast,
     naechster_poll_zeitpunkt,
@@ -29,7 +27,7 @@ from daemon.claude_usage_daemon_windows import (
     read_token,
     sendung_faellig,
 )
-from daemon.lokale_sessions import lies_lokale_sessions
+from daemon.lokale_sessions import ergaenze, lies_lokale_sessions
 from daemon.sessions_source import merge_into_payload, read_sessions_config
 
 UHR = {"t": 1_000_000, "tf": 24}
@@ -42,17 +40,13 @@ NUTZUNG = {"s": 40, "sr": 120, "w": 10, "wr": 5000, "st": "allowed",
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("gelungen, abstand", [
-    (True, POLL_INTERVAL),
-    (False, POLL_WIEDERHOLUNG_NACH_FEHLER_S),
+    (True, 60),
+    # Regression 2026-10-01: last_poll blieb nach einem Fehler stehen, der Poll
+    # lief dann bei jedem Durchlauf (~1 s) mit einer Logzeile je Versuch.
+    (False, 15),
 ])
 def test_naechster_poll_haengt_vom_ausgang_des_versuchs_ab(gelungen, abstand):
     assert naechster_poll_zeitpunkt(1000.0, gelungen) == 1000.0 + abstand
-
-
-def test_fehlschlag_wird_nicht_im_sekundentakt_wiederholt():
-    # Regression 2026-10-01: last_poll blieb nach einem Fehler stehen, der Poll
-    # lief dann bei jedem Durchlauf (~1 s) mit einer Logzeile je Versuch.
-    assert naechster_poll_zeitpunkt(0.0, False) > 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +222,38 @@ def test_sendeweg_ueberlebt_nicht_kodierbare_zeichen():
     # Ein einzelnes Surrogat (kaputter Sessionname) ist in UTF-8 nicht kodierbar.
     ok = asyncio.run(Session(client)._sende({"sn": "Sess\ud800ion", "ok": True}))
     assert ok is True
-    client.write_gatt_char.assert_awaited_once()
+    # Statt zu werfen wird das Zeichen ersetzt; der Rest kommt unverändert an.
+    gesendet = client.write_gatt_char.await_args.args[1]
+    assert gesendet == '{"sn":"Sess?ion","ok":true}'.encode("utf-8")
+
+
+def test_server_eintraege_ohne_zahl_oder_dict_kippen_die_liste_nicht():
+    gut = {"name": "gut", "zustand": "arbeitet", "seit_sekunden": 5}
+    daten = {"anzahl": {}, "sessions": [
+        "kein dict", None, 7,
+        {"name": "ohne", "zustand": "arbeitet", "seit_sekunden": None},
+        {"name": "text", "zustand": "arbeitet", "seit_sekunden": "bald"},
+        {"name": "bool", "zustand": "arbeitet", "seit_sekunden": True},
+        gut]}
+    lokal = [{"name": "lokal", "zustand": "arbeitet", "seit_sekunden": 1}]
+    ergebnis = ergaenze(daten, lokal)
+    namen = [s["name"] for s in ergebnis["sessions"]]
+    # Kaputte Zeitangaben zählen als 0 (ganz vorn), Nicht-dicts fallen weg.
+    assert namen == ["bool", "ohne", "text", "lokal", "gut"]
+    assert ergebnis["anzahl"]["gesamt"] == 5
+
+
+@pytest.mark.parametrize("zeitstempel", ["abc", [1], {"a": 1}, 1e999, True])
+def test_kaputter_zeitstempel_ueberspringt_nur_diese_datei(tmp_path, zeitstempel):
+    import os
+    (tmp_path / "a.json").write_text(
+        '{"pid": %d, "name": "kaputt", "status": "busy", "statusUpdatedAt": %s}'
+        % (os.getpid(), json.dumps(zeitstempel).replace("Infinity", "1e999")),
+        encoding="utf-8")
+    (tmp_path / "b.json").write_text(json.dumps(
+        {"pid": os.getpid(), "name": "heil", "status": "busy",
+         "statusUpdatedAt": 10**13}), encoding="utf-8")
+    assert [s["name"] for s in lies_lokale_sessions(tmp_path)] == ["heil"]
 
 
 # ---------------------------------------------------------------------------
