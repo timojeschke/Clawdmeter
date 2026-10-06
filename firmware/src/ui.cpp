@@ -289,14 +289,12 @@ static lv_obj_t* usage_container;
 
 // ---- Sessions screen ----
 static lv_obj_t* sessions_container;
-static lv_obj_t* sess_count_lbl[3];     // waiting / working / parked
+static lv_obj_t* sess_count_lbl[3];     // Total / Running / Idle
 static lv_obj_t* sess_name_lbl[SESSIONS_MAX_NAMES];
 static lv_obj_t* sess_counts_panel;     // Total / Running / Idle
-static lv_obj_t* sess_list_panel;       // card holding the waiting sessions
-static lv_obj_t* sess_list_caption;     // "Waiting for input" above the names
+static lv_obj_t* sess_list_panel;       // card listing the running sessions
+static lv_obj_t* sess_list_caption;     // "Running now" above the names
 static lv_obj_t* sess_more_lbl;         // "+N more" when the list was trimmed
-static int16_t   sess_row_h;            // row pitch, for resizing the card
-static int16_t   sess_first_row_y;      // y of the first name inside the card
 static int16_t   sess_list_max_h;       // card height when it runs to the bottom
 #define SESS_ZEILEN_WUNSCH 4
 static int16_t   sess_max_zeilen;       // wie viele Namen wirklich in die Karte passen
@@ -325,9 +323,9 @@ static lv_obj_t* panel_weekly = nullptr;
 static lv_obj_t* lbl_session_pct_sym = nullptr;  // "%" in smaller font
 static lv_obj_t* lbl_spending_desc = nullptr;     // "of your monthly budget"
 static lv_obj_t* lbl_spending_status = nullptr;   // "Under pace" / "On pace" / "Over pace"
-static lv_obj_t* lbl_anim;
-static lv_obj_t* lbl_scoped;
-static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote    // per-model weekly quota, replaces the idle line      // status line: connection state + whimsical idle
+static lv_obj_t* lbl_anim;       // status line: connection state + whimsical idle
+static lv_obj_t* lbl_scoped;     // per-model weekly quota, replaces the idle line
+static lv_obj_t* scoped_ring;    // kleiner Fortschrittsring links der Quote
 
 // ---- Batterie-Ecke oben rechts (auf allen Seiten, ueber dem Inhalt) ----
 // Fuenf Pixelbloecke wie die Figur Clawd, darunter eine Zeile "87% · 22 h".
@@ -759,10 +757,10 @@ static void init_sessions_screen(lv_obj_t* scr) {
                                                beschriftung[i], farbe[i]);
     }
 
-    // The waiting sessions, in a card of their own — the same rounded panel
+    // The running sessions, in a card of their own — the same rounded panel
     // the usage screen uses, so the page reads as one design rather than a
-    // stat block with loose text under it. Only the waiting ones are listed:
-    // running and parked sessions ask nothing of anyone.
+    // stat block with loose text under it. Only the running ones are listed
+    // (working plus background); idle sessions are just counted.
     const int16_t liste_y = L.content_y + zahlen_h + L.usage_panel_gap;
     const int16_t erste_zeile = L.sess_caption_font->line_height + 6;
 
@@ -816,11 +814,7 @@ static void init_sessions_screen(lv_obj_t* scr) {
     lv_label_set_text(sess_more_lbl, "");
     lv_obj_add_flag(sess_more_lbl, LV_OBJ_FLAG_HIDDEN);
 
-    // Row geometry the update pass needs to resize the card to its content.
-    sess_row_h = zeile_h;
-    sess_first_row_y = erste_zeile;
-
-    // Shown instead of three zeros when nothing has arrived: "0 waiting" and
+    // Shown instead of three zeros when nothing has arrived: "0 running" and
     // "nothing known" look identical otherwise, and mean opposite things.
     // Lives inside the same card, at the same inset as the names — a bare
     // sentence floating where a panel belongs looks like a rendering fault.
@@ -1371,7 +1365,6 @@ void ui_tick_anim(void) {
     lv_label_set_text(lbl_anim, buf);
 }
 
-static screen_t prev_non_splash_screen = SCREEN_USAGE;
 // Die gemessenen Verbrauchsraten ueberleben Neustart und Kabel, indem sie im
 // NVS liegen — derselbe Bereich wie die Helligkeit. Je Helligkeitsstufe ein
 // Schluessel, weil der Bildschirm der groesste Verbraucher ist. Geschrieben wird
@@ -1457,100 +1450,16 @@ static void global_click_cb(lv_event_t* e) {
     }
 }
 
-// Die neue Seite blendet auf, statt hereinzufahren.
+// Seitenwechsel schaltet hart um, ohne Aufblenden oder Schub.
 //
-// Der Schub ueber die volle Breite war auf dem Geraet sichtbar hakelig, und
-// das ist kein Einstellungsfehler: Der C6 hat kein PSRAM, LVGL zeichnet in
-// schmalen Streifen, und ein Inhalt, der sich ueber 480 Pixel bewegt, faellt
-// bei jedem Bild komplett neu an. Timo, 2026-09-25: "das ist ja mega kacke
-// hakelig. wenns nicht anders geht, die animation von ganz am anfang einfach
-// reinmachen."
-//
-// Das Aufblenden aendert nur einen Wert je Bild statt die Geometrie und
-// bleibt deshalb ruhig. Wer es ganz ohne will, setzt ui_set_seitenanimation
-// auf false — dann schaltet das Geraet hart um, was ehrlicher ist als eine
-// stockende Bewegung.
-#define SEITENWECHSEL_MS 200
-
-// AUS, und zwar gemessen statt vermutet.
-//
-// Auf dem Geraet (C6, 480x480, kein PSRAM) am 2026-09-25 ueber drei Wechsel:
-//   224 ms, 2 Bilder, groesste Luecke 134 ms
-//   244 ms, 2 Bilder, groesste Luecke 125 ms
-//   261 ms, 2 Bilder, groesste Luecke 132 ms
-// Zum Vergleich der Simulator auf dem Rechner: 33 Bilder in 200 ms, groesste
-// Luecke 10 ms.
-//
-// Zwei Bilder sind keine Animation. Ein vollflaechiges Neuzeichnen kostet hier
-// gut 120 ms, und das Aufblenden macht den Wechsel damit nur um diese Zeit
-// langsamer, ohne dass etwas fliesst. Der harte Wechsel ist schneller UND
-// sieht besser aus.
-//
-// Die Mechanik bleibt stehen, weil sie auf einem Board mit PSRAM und
-// schnellerem Panel tragen koennte — aber sie wird eingeschaltet, wenn sie
-// dort gemessen wurde, nicht vorher.
-static bool seitenanimation_an = false;
-
-void ui_set_seitenanimation(bool an) { seitenanimation_an = an; }
-
-// Messung des Seitenwechsels. Ob eine Animation "ruckelt", ist eine Frage an
-// das Auge — aber die Zahlen dahinter sind messbar, und die PC-Session sieht
-// das Display nicht, nur die serielle Konsole. Deshalb misst die Firmware
-// selbst: Wie viele Bilder wurden waehrend des Uebergangs gezeichnet, und wie
-// gross war die groesste Luecke zwischen zwei Bildern.
-//
-// Fluessig heisst rund 30 Bilder je Sekunde, also Luecken unter 33 ms. Eine
-// groesste Luecke von 100 ms und mehr sieht man als Stocken.
-static uint32_t wechsel_start_ms;
-static uint32_t wechsel_letztes_bild_ms;
-static uint16_t wechsel_bilder;
-static uint16_t wechsel_groesste_luecke_ms;
-static bool     wechsel_laeuft;
-
-static void wechsel_messung_starten(void) {
-    wechsel_start_ms = lv_tick_get();
-    wechsel_letztes_bild_ms = wechsel_start_ms;
-    wechsel_bilder = 0;
-    wechsel_groesste_luecke_ms = 0;
-    wechsel_laeuft = true;
-}
-
-// Aus der Hauptschleife, einmal je gezeichnetem Bild.
-void ui_wechsel_messung_tick(void) {
-    if (!wechsel_laeuft) return;
-    const uint32_t jetzt = lv_tick_get();
-    const uint32_t luecke = jetzt - wechsel_letztes_bild_ms;
-    wechsel_letztes_bild_ms = jetzt;
-    if (luecke > wechsel_groesste_luecke_ms) {
-        wechsel_groesste_luecke_ms = (uint16_t)luecke;
-    }
-    wechsel_bilder++;
-
-    if (jetzt - wechsel_start_ms < SEITENWECHSEL_MS) return;
-    wechsel_laeuft = false;
-    Serial.printf("Seitenwechsel: %u ms, %u Bilder, groesste Luecke %u ms\n",
-                  (unsigned)(jetzt - wechsel_start_ms),
-                  (unsigned)wechsel_bilder,
-                  (unsigned)wechsel_groesste_luecke_ms);
-}
-
+// Gemessen auf dem Geraet (C6, 480x480, kein PSRAM) am 2026-09-25: Ein
+// Aufblenden ueber 200 ms ergab nur 2 Bilder mit je gut 120 ms Luecke, also
+// keine Animation, sondern einen um diese Zeit langsameren Wechsel. Ein
+// Schub ueber die volle Breite war noch haekeliger (Timo, 2026-09-25). Der
+// harte Wechsel ist schneller und sieht besser aus.
 static void seite_aufblenden(lv_obj_t* container) {
     if (!container) return;
-    if (!seitenanimation_an) {
-        lv_obj_set_style_opa(container, LV_OPA_COVER, 0);
-        return;
-    }
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, container);
-    lv_anim_set_values(&a, LV_OPA_40, LV_OPA_COVER);
-    lv_anim_set_time(&a, SEITENWECHSEL_MS);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-    lv_anim_set_exec_cb(&a, [](void* obj, int32_t v) {
-        lv_obj_set_style_opa((lv_obj_t*)obj, (lv_opa_t)v, 0);
-    });
-    lv_anim_start(&a);
-    wechsel_messung_starten();
+    lv_obj_set_style_opa(container, LV_OPA_COVER, 0);
 }
 
 void ui_show_screen(screen_t screen) {
@@ -1591,7 +1500,6 @@ void ui_show_screen(screen_t screen) {
         else                          lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
     }
 
-    if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
     apply_battery_visibility();
 }

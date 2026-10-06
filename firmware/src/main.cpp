@@ -323,26 +323,20 @@ void setup() {
     idle_init();        // takes over panel brightness and starts the idle timer
     brightness_init();  // load the user's saved brightness level and apply via idle
 
-    // Startdiagnose für eine ungeklärte I2C-Meldung
-    // (i2cWrite ESP_ERR_INVALID_STATE, ~1007 ms, direkt nach der Helligkeit).
-    // Sie tritt sporadisch auf, bleibt folgenlos — Touch und IMU melden danach
-    // beide OK — und liess sich aus der Ferne nicht zuordnen. Diese vier Zeilen
-    // sagen im Startprotokoll, WELCHER der drei I2C-Teilnehmer sie auslöst.
-    // Dürfen wieder raus, sobald das geklärt ist.
+    // Startprotokoll "init: ..." (fünf Zeilen: power, imu, sound, touch, fertig).
+    // Es ordnet im Log die ungeklärte I2C-Meldung ein (i2cWrite
+    // ESP_ERR_INVALID_STATE, ~1 s nach dem Start; Befund und Stand der Suche
+    // in boards/waveshare_amoled_216_c6/imu.cpp). "init: fertig" gilt der
+    // PC-Session als Nachweis, dass der Start durchgelaufen ist — die Zeilen
+    // bleiben deshalb drin.
     Serial.println("init: power");
     power_hal_init();
-    // Settle before talking to the QMI8658. Located by bracketing the init
-    // steps on real hardware: the failing write sits between "init: imu" and
-    // the sensor's own OK line, so it is the IMU's first transaction — not the
-    // PMU, where an earlier guess of mine put it.
-    //
-    // Correlates with display brightness (step 3: three of three boots),
-    // although brightness never touches I2C — it is a QSPI command. A brighter
-    // AMOLED simply draws more from the shared supply, and the sensor's first
-    // write is what happens to land in that moment. The library ignores the
-    // failure and the chip reports OK afterwards, so this only silences a
-    // harmless log line; it is worth doing because an unexplained error in the
-    // boot log trains people to ignore the boot log.
+    // Kurze Pause vor dem QMI8658. Die Meldung trat zwischen "init: imu" und
+    // der OK-Zeile des Sensors auf, also bei dessen erster Transaktion.
+    // Ob die Pause etwas bewirkt, ist nur schwach belegt (3 von 3 Starts ohne,
+    // 2 von 7 mit Pause); ein Zusammenhang mit der Helligkeit wurde widerlegt.
+    // Die Meldung ist folgenlos, der Sensor meldet danach OK. Einzelheiten und
+    // der Stand der Suche stehen in imu.cpp des C6-Boards.
     delay(30);
     Serial.println("init: imu");
     imu_hal_init();
@@ -449,7 +443,6 @@ void loop() {
     idle_tick();
     lv_timer_handler();
     ui_tick_anim();
-    ui_wechsel_messung_tick();
     ble_tick();
     power_hal_tick();
     imu_hal_tick();
