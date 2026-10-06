@@ -36,13 +36,16 @@ struct UsageData {
     // ---- Claude Code sessions on a remote machine (optional second source) ----
     // Absent unless the daemon is configured for it; sessions_valid stays false
     // then and the sessions screen says so instead of showing three zeros,
-    // which would read as "nothing is waiting" rather than "nothing is known".
+    // which would read as "nothing is running" rather than "nothing is known".
     bool sessions_valid;
     int  sessions_waiting;   // finished a turn, waiting for input
     int  sessions_working;   // busy right now
     int  sessions_background; // reply done, a background task still runs (Claude Code status "shell")
     int  sessions_parked;    // idle for a long while
-    // Names of waiting sessions, as many as fit the 512-byte BLE payload.
+    // Anzeige: Total = waiting + working + parked + background, Running =
+    // working + background, Idle = der Rest (gerechnet in ui.cpp).
+    // Names of the running sessions (working first, then background), as many
+    // as fit the 512-byte BLE payload.
     // sessions_hidden counts those left out — the screen shows "+N more"
     // rather than silently presenting a partial list as complete.
     char sessions_names[SESSIONS_MAX_NAMES][SESSIONS_NAME_LEN];

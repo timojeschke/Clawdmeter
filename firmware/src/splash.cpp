@@ -269,6 +269,42 @@ static uint16_t *row_buf = NULL;   // scratch row, sized to canvas_w (PSRAM path
 #  define SPLASH_DIRECT_DRAW 0
 #endif
 
+// --- Uhrzeit auf dem Clawd-Bildschirm --------------------------------------
+//
+// Diese Seite zeichnet direkt aufs Panel und geht an LVGL vorbei (siehe
+// SPLASH_DIRECT_DRAW). Ein Textfeld von LVGL waere hier wirkungslos: Es wuerde
+// beim naechsten Bild der Animation ueberschrieben. Die Ziffern muessen also
+// von dieser Datei selbst gezeichnet werden — und dann passen sie als
+// Pixel-Art ohnehin besser zum Rest als eine gesetzte Schrift.
+//
+// 3x5-Raster je Zeichen, wie auf alten Anzeigen. Bit 0 ist links oben,
+// zeilenweise; ein gesetztes Bit ist ein Punkt.
+#define UHR_ZEICHEN_B 3
+#define UHR_ZEICHEN_H 5
+#define UHR_PUNKT     6     // Bildpunkte je Rasterpunkt
+#define UHR_ABSTAND   1     // Rasterpunkte zwischen zwei Zeichen
+// Abstand zur oberen und rechten Bildkante. 28 statt 10, weil das Panel
+// abgerundete Ecken hat: Bei 10 Pixeln lag die letzte Ziffer in der Rundung
+// und wurde abgeschnitten. Der Rest der Oberflaeche haelt aus demselben Grund
+// 20 Pixel Abstand; oben rechts trifft die Rundung doppelt zu.
+#define UHR_RAND      28
+
+static const uint16_t UHR_GLYPHEN[11] = {
+    0x7B6F, 0x749A, 0x73E7, 0x79E7, 0x49ED, 0x79CF, 0x7BCF, 0x4927, 0x7BEF, 0x79EF,
+    0x0410,   // Doppelpunkt: je ein Punkt in Zeile 1 und 3, mittig
+};
+
+static char uhr_text[8] = "";
+
+void splash_set_clock(const char* text) {
+    if (!text) { uhr_text[0] = '\0'; return; }
+    strncpy(uhr_text, text, sizeof(uhr_text) - 1);
+    uhr_text[sizeof(uhr_text) - 1] = '\0';
+}
+
+// Bekannte Luecke: Auf Boards mit PSRAM (Canvas-Pfad, unten) wird die Uhr
+// nicht gezeichnet; splash_set_clock() merkt sich den Text nur.
+
 #if SPLASH_DIRECT_DRAW
 static uint16_t*       strip_buf = NULL;   // one grid-row band: (GRID*scr_cell)×scr_cell
 static int             scr_cell  = 24;     // on-screen px per grid cell
@@ -300,34 +336,6 @@ static void blit_cells(const uint8_t* cells, const uint16_t* palette,
     }
 }
 
-
-// --- Uhrzeit auf dem Clawd-Bildschirm --------------------------------------
-//
-// Diese Seite zeichnet direkt aufs Panel und geht an LVGL vorbei (siehe
-// SPLASH_DIRECT_DRAW). Ein Textfeld von LVGL waere hier wirkungslos: Es wuerde
-// beim naechsten Bild der Animation ueberschrieben. Die Ziffern muessen also
-// von dieser Datei selbst gezeichnet werden — und dann passen sie als
-// Pixel-Art ohnehin besser zum Rest als eine gesetzte Schrift.
-//
-// 3x5-Raster je Zeichen, wie auf alten Anzeigen. Bit 0 ist links oben,
-// zeilenweise; ein gesetztes Bit ist ein Punkt.
-#define UHR_ZEICHEN_B 3
-#define UHR_ZEICHEN_H 5
-#define UHR_PUNKT     6     // Bildpunkte je Rasterpunkt
-#define UHR_ABSTAND   1     // Rasterpunkte zwischen zwei Zeichen
-// Abstand zur oberen und rechten Bildkante. 28 statt 10, weil das Panel
-// abgerundete Ecken hat: Bei 10 Pixeln lag die letzte Ziffer in der Rundung
-// und wurde abgeschnitten. Der Rest der Oberflaeche haelt aus demselben Grund
-// 20 Pixel Abstand; oben rechts trifft die Rundung doppelt zu.
-#define UHR_RAND      28
-
-static const uint16_t UHR_GLYPHEN[11] = {
-    0x7B6F, 0x749A, 0x73E7, 0x79E7, 0x49ED, 0x79CF, 0x7BCF, 0x4927, 0x7BEF, 0x79EF,
-    0x0410,   // Doppelpunkt: je ein Punkt in Zeile 1 und 3, mittig
-};
-
-static char uhr_text[8] = "";
-
 // Ziffer 0..9 oder ':' -> Zeiger in die Tabelle, sonst -1.
 static int uhr_index(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -335,13 +343,6 @@ static int uhr_index(char c) {
     return -1;
 }
 
-void splash_set_clock(const char* text) {
-    if (!text) { uhr_text[0] = '\0'; return; }
-    strncpy(uhr_text, text, sizeof(uhr_text) - 1);
-    uhr_text[sizeof(uhr_text) - 1] = '\0';
-}
-
-#if SPLASH_DIRECT_DRAW
 // Wird nach JEDEM Bild gezeichnet, nicht nur bei Aenderung: Die Animation
 // repariert ihre eigenen Zellen, und sobald eine davon unter der Uhr liegt,
 // waere die Uhr sonst halb weggewischt.
@@ -377,7 +378,6 @@ static void uhr_zeichnen(void) {
     display_hal_draw_bitmap(board_caps().width - UHR_RAND - breite,
                             UHR_RAND, breite, hoehe, puffer);
 }
-#endif
 
 static void render_frame(const uint8_t *cells, const uint16_t *palette) {
     if (!strip_buf) return;
@@ -414,85 +414,6 @@ static void render_frame(const uint8_t *cells, const uint16_t *palette) {
 }
 
 #else  // ── PSRAM: LVGL canvas render (unchanged) ──
-
-
-// --- Uhrzeit auf dem Clawd-Bildschirm --------------------------------------
-//
-// Diese Seite zeichnet direkt aufs Panel und geht an LVGL vorbei (siehe
-// SPLASH_DIRECT_DRAW). Ein Textfeld von LVGL waere hier wirkungslos: Es wuerde
-// beim naechsten Bild der Animation ueberschrieben. Die Ziffern muessen also
-// von dieser Datei selbst gezeichnet werden — und dann passen sie als
-// Pixel-Art ohnehin besser zum Rest als eine gesetzte Schrift.
-//
-// 3x5-Raster je Zeichen, wie auf alten Anzeigen. Bit 0 ist links oben,
-// zeilenweise; ein gesetztes Bit ist ein Punkt.
-#define UHR_ZEICHEN_B 3
-#define UHR_ZEICHEN_H 5
-#define UHR_PUNKT     6     // Bildpunkte je Rasterpunkt
-#define UHR_ABSTAND   1     // Rasterpunkte zwischen zwei Zeichen
-// Abstand zur oberen und rechten Bildkante. 28 statt 10, weil das Panel
-// abgerundete Ecken hat: Bei 10 Pixeln lag die letzte Ziffer in der Rundung
-// und wurde abgeschnitten. Der Rest der Oberflaeche haelt aus demselben Grund
-// 20 Pixel Abstand; oben rechts trifft die Rundung doppelt zu.
-#define UHR_RAND      28
-
-static const uint16_t UHR_GLYPHEN[11] = {
-    0x7B6F, 0x749A, 0x73E7, 0x79E7, 0x49ED, 0x79CF, 0x7BCF, 0x4927, 0x7BEF, 0x79EF,
-    0x0410,   // Doppelpunkt: je ein Punkt in Zeile 1 und 3, mittig
-};
-
-static char uhr_text[8] = "";
-
-// Ziffer 0..9 oder ':' -> Zeiger in die Tabelle, sonst -1.
-static int uhr_index(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c == ':')             return 10;
-    return -1;
-}
-
-void splash_set_clock(const char* text) {
-    if (!text) { uhr_text[0] = '\0'; return; }
-    strncpy(uhr_text, text, sizeof(uhr_text) - 1);
-    uhr_text[sizeof(uhr_text) - 1] = '\0';
-}
-
-#if SPLASH_DIRECT_DRAW
-// Wird nach JEDEM Bild gezeichnet, nicht nur bei Aenderung: Die Animation
-// repariert ihre eigenen Zellen, und sobald eine davon unter der Uhr liegt,
-// waere die Uhr sonst halb weggewischt.
-static void uhr_zeichnen(void) {
-    const int n = (int)strlen(uhr_text);
-    if (n == 0) return;
-
-    const int breite = n * (UHR_ZEICHEN_B + UHR_ABSTAND) * UHR_PUNKT;
-    const int hoehe  = UHR_ZEICHEN_H * UHR_PUNKT;
-    static uint16_t puffer[8 * (UHR_ZEICHEN_B + UHR_ABSTAND) * UHR_PUNKT
-                           * UHR_ZEICHEN_H * UHR_PUNKT];
-    if (breite * hoehe > (int)(sizeof(puffer) / sizeof(puffer[0]))) return;
-
-    for (int i = 0; i < breite * hoehe; i++) puffer[i] = COL_EMPTY;
-
-    for (int z = 0; z < n; z++) {
-        const int idx = uhr_index(uhr_text[z]);
-        if (idx < 0) continue;
-        const uint16_t muster = UHR_GLYPHEN[idx];
-        const int x0 = z * (UHR_ZEICHEN_B + UHR_ABSTAND) * UHR_PUNKT;
-        for (int ry = 0; ry < UHR_ZEICHEN_H; ry++) {
-            for (int rx = 0; rx < UHR_ZEICHEN_B; rx++) {
-                if (!(muster & (1u << (ry * UHR_ZEICHEN_B + rx)))) continue;
-                for (int dy = 0; dy < UHR_PUNKT; dy++) {
-                    uint16_t* zeile = &puffer[(ry * UHR_PUNKT + dy) * breite
-                                              + x0 + rx * UHR_PUNKT];
-                    for (int dx = 0; dx < UHR_PUNKT; dx++) zeile[dx] = COL_UHR;
-                }
-            }
-        }
-    }
-
-    display_hal_draw_bitmap(board_caps().width - UHR_RAND - breite,
-                            UHR_RAND, breite, hoehe, puffer);
-}
-#endif
 
 static void render_frame(const uint8_t *cells, const uint16_t *palette) {
     if (!row_buf || !canvas_buf) return;
