@@ -298,7 +298,8 @@ static lv_obj_t* sess_more_lbl;         // "+N more" when the list was trimmed
 static int16_t   sess_list_max_h;       // card height when it runs to the bottom
 #define SESS_ZEILEN_WUNSCH 4
 static int16_t   sess_max_zeilen;       // wie viele Namen wirklich in die Karte passen
-static lv_obj_t* sess_hint_lbl;         // shown when no session data has arrived
+static lv_obj_t* sess_hint_lbl;         // "Nothing running" in the list card (data present, no sessions)
+static lv_obj_t* sess_anim_lbl;         // empty state: same status line as lbl_anim on the usage page
 static lv_obj_t* lbl_title;
 static lv_obj_t* sess_title_lbl;   // Ueberschrift der Sessions-Seite
 // Clock fed by the daemon: base epoch (local wall-clock seconds) + the lv_tick at
@@ -822,7 +823,17 @@ static void init_sessions_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_font(sess_hint_lbl, L.reset_font, 0);
     lv_obj_set_style_text_color(sess_hint_lbl, COL_DIM, 0);
     lv_obj_set_pos(sess_hint_lbl, 0, erste_zeile);
-    lv_label_set_text(sess_hint_lbl, "No connection");
+    lv_label_set_text(sess_hint_lbl, "Nothing running");
+
+    // Statuszeile des Leerzustands: dieselbe wie lbl_anim der Usage-Seite
+    // (Font, Farbe, Platz am unteren Rand), nur ein eigenes Label, weil
+    // lbl_anim im usage_container haengt.
+    sess_anim_lbl = lv_label_create(sessions_container);
+    lv_label_set_text(sess_anim_lbl, "");
+    lv_obj_set_style_text_font(sess_anim_lbl, L.anim_font, 0);
+    lv_obj_set_style_text_color(sess_anim_lbl, COL_ACCENT, 0);
+    lv_obj_align(sess_anim_lbl, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
+    lv_obj_add_flag(sess_anim_lbl, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_add_flag(sessions_container, LV_OBJ_FLAG_HIDDEN);
 }
@@ -834,6 +845,38 @@ static void init_sessions_screen(lv_obj_t* scr) {
 static bool sessionsdaten_frisch(const UsageData* d) {
     return d->sessions_valid
         && (lv_tick_get() - (uint32_t)d->sessions_last_ms) < SESSIONS_STALE_MS;
+}
+
+// Gemeinsamer Takt der orangen Statuszeile (Usage-Seite und leere Sessionseite):
+// schaltet den Wechseltext und den Spinner fort. Liefert true, wenn der
+// Spinner einen Schritt weiter ist und die Zeile neu gesetzt werden muss.
+static bool anim_weiterschalten(void) {
+    const uint32_t now = lv_tick_get();
+    if (now - anim_msg_start >= ANIM_MSG_MS) {
+        anim_msg_idx = (anim_msg_idx + 1) % ANIM_MSG_COUNT;
+        anim_msg_start = now;
+    }
+    if (now - anim_last_ms < spinner_ms[anim_spinner_idx]) return false;
+    anim_last_ms = now;
+    anim_phase = (anim_phase + 1) % SPINNER_PHASES;
+    anim_spinner_idx = (anim_phase < SPINNER_COUNT) ? anim_phase
+                                                    : (SPINNER_PHASES - anim_phase);
+    return true;
+}
+
+// Text der Statuszeile im Ruhezustand ohne Daten: ohne Funk "Waiting", mit
+// Funk im Wechsel "Listening" und "No data", damit sie lebt UND datenlos wirkt.
+static const char* anim_ruhetext(void) {
+    if (!s_ble_connected) return "Waiting";
+    return (anim_msg_idx & 1) ? "No data" : "Listening";
+}
+
+// "<Spinner> <Text>…" in das Label schreiben.
+static void anim_zeile_setzen(lv_obj_t* lbl, const char* text) {
+    static char buf[80];
+    snprintf(buf, sizeof(buf), "%s %s\xE2\x80\xA6",
+             spinner_frames[anim_spinner_idx], text);
+    lv_label_set_text(lbl, buf);
 }
 
 static void update_sessions_screen(const UsageData* d) {
@@ -856,30 +899,26 @@ static void update_sessions_screen(const UsageData* d) {
         lv_obj_add_flag(sess_counts_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
 
-        // Mitte des Inhaltsbereichs, nicht des Schirms: oben steht die
-        // Kopfzeile mit Uhr und Batterie, und die bleibt sichtbar.
-        const int16_t mitte = L.content_y / 2;
-        mini_kreatur_zeigen(sessions_container, mitte - 18);
+        // Pixelgleich zur Usage-Seite: dort sitzt sie bei CENTER, -20 in
+        // idle_group, die bei L.content_y beginnt und bis zum Schirmende
+        // reicht. Auf den ganzen Schirm umgerechnet: content_y / 2 - 20.
+        mini_kreatur_zeigen(sessions_container, L.content_y / 2 - 20);
 
-        // Genau sagen, was fehlt: ohne Funk ist es die Verbindung zum Rechner,
-        // mit Funk der Server dahinter. Beides "No connection" zu nennen,
-        // schickt bei der Fehlersuche in die falsche Richtung.
-        //
-        // "No data" statt "No session data": dasselbe Wort wie die Usage-Seite
-        // im selben Fall. Timo, 2026-09-28: "wenn keine Daten vom Server
-        // kommen, dann auch No Data anzeigen."
-        if (lv_obj_get_parent(sess_hint_lbl) != sessions_container) {
-            lv_obj_set_parent(sess_hint_lbl, sessions_container);
-        }
-        lv_label_set_text(sess_hint_lbl,
-                          s_ble_connected ? "No data" : "No connection");
-        lv_obj_set_style_text_align(sess_hint_lbl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(sess_hint_lbl, LV_ALIGN_CENTER, 0, mitte + L.idle_px / 2);
-        lv_obj_clear_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
+        // Statt eines stillen grauen Hinweises dieselbe orange Statuszeile wie
+        // die Usage-Seite im Ruhezustand: ohne Funk "Waiting", mit Funk
+        // "Listening" im Wechsel mit "No data". Timo, 2026-10-06: "die von der
+        // usage seite viel geiler, mit dem orangenen animiert". Der Takt
+        // (ui_tick_anim) schaltet sie fort; hier nur der aktuelle Text.
+        // Frueher: graues "No data" / "No connection"; Timo, 2026-09-28:
+        // "wenn keine Daten vom Server kommen, dann auch No Data anzeigen."
+        lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
+        anim_zeile_setzen(sess_anim_lbl, anim_ruhetext());
+        lv_obj_clear_flag(sess_anim_lbl, LV_OBJ_FLAG_HIDDEN);
         return;
     }
     lv_obj_clear_flag(sess_counts_panel, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(sess_anim_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(sess_hint_lbl, LV_OBJ_FLAG_HIDDEN);
     // Die Kreatur gehoert zurueck auf die Usage-Seite, sonst steht sie ueber
     // der Liste, die gleich wieder Namen zeigt.
@@ -887,15 +926,6 @@ static void update_sessions_screen(const UsageData* d) {
         lv_obj_set_parent(mini_kreatur, idle_group);
         lv_obj_align(mini_kreatur, LV_ALIGN_CENTER, 0, -20);
         lv_obj_add_flag(mini_kreatur, LV_OBJ_FLAG_HIDDEN);
-    }
-    // Der Hinweis ebenso zurueck in die Karte. Der Leerzustand haengt ihn auf
-    // die ganze Seite um; blieb er dort, zentrierte sich "Nothing running"
-    // danach auf den BILDSCHIRM statt auf die Karte — und die Bildschirmmitte
-    // liegt genau an deren Oberkante. Traf jeden Start, weil das Geraet
-    // anfangs immer kurz ohne Sessiondaten ist. Timo, 2026-09-28: "das
-    // Nothing Running ist nicht zentriert im Block, das ist einfach ganz oben."
-    if (lv_obj_get_parent(sess_hint_lbl) != sess_list_panel) {
-        lv_obj_set_parent(sess_hint_lbl, sess_list_panel);
     }
     lv_obj_clear_flag(sess_list_caption, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(sess_list_panel, LV_OBJ_FLAG_HIDDEN);
@@ -1321,7 +1351,10 @@ void ui_tick_anim(void) {
         if (sessionsdaten_frisch(&letzte_daten) == sessionseite_leer) {
             update_sessions_screen(&letzte_daten);
         }
-        if (sessionseite_leer) splash_mini_tick();
+        if (sessionseite_leer) {
+            splash_mini_tick();
+            if (anim_weiterschalten()) anim_zeile_setzen(sess_anim_lbl, anim_ruhetext());
+        }
         return;
     }
 
@@ -1332,26 +1365,15 @@ void ui_tick_anim(void) {
         splash_mini_tick();                    // animate the sleeping creature on the idle screen
     }
 
-    uint32_t now = lv_tick_get();
-
-
-    if (now - anim_msg_start >= ANIM_MSG_MS) {
-        anim_msg_idx = (anim_msg_idx + 1) % ANIM_MSG_COUNT;
-        anim_msg_start = now;
-    }
-
-    if (now - anim_last_ms < spinner_ms[anim_spinner_idx]) return;
-    anim_last_ms = now;
-    anim_phase = (anim_phase + 1) % SPINNER_PHASES;
-    anim_spinner_idx = (anim_phase < SPINNER_COUNT) ? anim_phase
-                                                    : (SPINNER_PHASES - anim_phase);
+    if (!anim_weiterschalten()) return;
+    const uint32_t now = lv_tick_get();
 
     // Status text by priority. Whimsical messages only when connected & settled.
     const char* text;
     if (!s_ble_connected) {
         text = "Waiting";              // advertising / waiting for a host connection
     } else if (view_state == 1) {      // idle — alternate so it reads as alive AND data-less
-        text = (anim_msg_idx & 1) ? "No data" : "Listening";
+        text = anim_ruhetext();
     } else if (now - connected_at_ms < 5000) {
         text = "Connected";
     } else {
@@ -1359,10 +1381,7 @@ void ui_tick_anim(void) {
     }
 
     // All states share the whimsical style: "<glyph> <Title-case word>…"
-    static char buf[80];
-    snprintf(buf, sizeof(buf), "%s %s\xE2\x80\xA6",
-             spinner_frames[anim_spinner_idx], text);
-    lv_label_set_text(lbl_anim, buf);
+    anim_zeile_setzen(lbl_anim, text);
 }
 
 // Die gemessenen Verbrauchsraten ueberleben Neustart und Kabel, indem sie im
@@ -1488,8 +1507,8 @@ void ui_show_screen(screen_t screen) {
             // Jedes Mal aus letzte_daten neu aufbauen, nicht nur beim Umschlagen
             // des Leerzustands: Die Kreatur gibt es nur einmal. Hat die
             // Usage-Seite sie inzwischen geholt, sieht der Takt keinen
-            // Wechsel und die leere Seite bliebe ohne Kreatur. Ebenso ist der
-            // Hinweis "No data" / "No connection" auf dem neuesten Stand.
+            // Wechsel und die leere Seite bliebe ohne Kreatur. Ebenso ist die
+            // Statuszeile auf dem neuesten Stand.
             update_sessions_screen(&letzte_daten);
             if (wechsel) seite_aufblenden(sessions_container);
         }
@@ -1527,8 +1546,8 @@ void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) 
     if (s_ble_connected && !was_connected) connected_at_ms = lv_tick_get();
     // pair / idle / usage — picked from connection + data freshness.
     update_view_state();
-    // Der Hinweis der leeren Sessionseite haengt am Verbindungszustand
-    // ("No data" mit Funk, "No connection" ohne). Der Takt baut nur bei einem
+    // Die Statuszeile der leeren Sessionseite haengt am Verbindungszustand
+    // ("Listening"/"No data" mit Funk, "Waiting" ohne). Der Takt baut nur bei einem
     // Wechsel von leer zu gefuellt neu auf und bemerkt das nicht.
     if (s_ble_connected != was_connected && current_screen == SCREEN_SESSIONS) {
         update_sessions_screen(&letzte_daten);
