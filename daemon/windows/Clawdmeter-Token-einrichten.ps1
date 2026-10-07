@@ -62,24 +62,32 @@ function DaemonNeustart($wert) {
 
 # Liest ab Zeile $ab im Daemon-Log mit: Token-Quelle und das erste Ergebnis des Nutzungsabrufs.
 function LogBeobachten([int]$ab, [int]$sekunden) {
-    $quelle = $null; $ergebnis = $null
+    $quelle = $null; $ergebnis = $null; $usage = $null
     $bis = (Get-Date).AddSeconds($sekunden)
     while ((Get-Date) -lt $bis -and -not $ergebnis) {
         Start-Sleep -Seconds 2
         $neu = @(Get-Content $LogDatei -ErrorAction SilentlyContinue | Select-Object -Skip $ab)
         foreach ($z in $neu) {
             if (-not $quelle -and $z -match 'Token source:\s*(.+)$') { $quelle = $Matches[1].Trim() }
+            # Der Daemon fragt zwei Stellen ab. "usage endpoint" liefert die Modell-Zeile (z. B. Fable);
+            # ein 403 dort heisst: Hauptwerte ja, Modell-Zeile nein (so beobachtet am 2026-10-07).
+            if ($z -match 'usage endpoint HTTP (\d{3})') { $usage = "HTTP $($Matches[1])" }
             if ($z -match 'API HTTP (\d{3})') { $ergebnis = "HTTP $($Matches[1])"; break }
             if ($z -match 'API call failed') { $ergebnis = 'kein Internet / Abruf fehlgeschlagen'; break }
             if ($z -match 'Sending:.*"ok":true') { $ergebnis = 'OK - Nutzungsdaten kommen an'; break }
         }
     }
-    return @{ Quelle = $quelle; Ergebnis = $ergebnis }
+    return @{ Quelle = $quelle; Ergebnis = $ergebnis; Usage = $usage }
 }
 
 function Zeig($r) {
     Sag ("  Token-Quelle laut Daemon: {0}" -f $(if ($r.Quelle) { $r.Quelle } else { '(keine Zeile gefunden)' })) 'Cyan'
     Sag ("  Erster Abruf:             {0}" -f $(if ($r.Ergebnis) { $r.Ergebnis } else { '(noch kein Ergebnis - spaeter im Log nachsehen)' })) 'Cyan'
+    if ($r.Usage) {
+        Sag ("  Modell-Zeile (Fable):     {0}" -f $r.Usage) 'Yellow'
+        Sag '  Hinweis: Mit diesem Token kommen die Hauptwerte an, die Modell-Zeile (Fable) aber nicht.' 'Yellow'
+        Sag '  Wenn dir die fehlt: "Clawdmeter Token entfernen" stellt den alten Weg wieder her.' 'Yellow'
+    }
 }
 
 function VariableGesetzt { [bool]([Environment]::GetEnvironmentVariable($VarName, 'User')) }
@@ -120,6 +128,8 @@ try {
 
     $wert = $null
     if ($Trockenlauf) {
+        # Der Trockenlauf schreibt einen Platzhalter und loescht ihn wieder - ein echtes Token ginge dabei verloren.
+        if (VariableGesetzt) { Sag 'Trockenlauf abgebrochen: Es ist schon ein Token gesetzt, das dabei verloren ginge.' 'Red'; Ende 3 }
         Sag '[Trockenlauf: setup-token wird uebersprungen, Platzhalterwert]' 'DarkYellow'
         $wert = 'sk-ant-oat01-TROCKENLAUF-kein-echter-Wert-0000000000000000'
     } else {
@@ -128,6 +138,16 @@ try {
         Write-Host 'Weiter mit einer beliebigen Taste ...'; [void][Console]::ReadKey($true)
         Sag ''
         & $claude setup-token
+        Sag ''
+        Sag '------------------------------------------------------------------' 'White'
+        Sag 'Oben steht jetzt eine lange Zeile, die mit  sk-ant-oat01-  beginnt.' 'White'
+        Sag 'DAS ist das Token (bei manchen Farbschemata orange dargestellt).' 'White'
+        Sag '  - Mit der Maus die ganze Zeile markieren, vom s bis zum letzten Zeichen.'
+        Sag '  - Kopieren: Enter oder Rechtsklick (bzw. Strg+C).'
+        Sag '  - Unten einfuegen: Rechtsklick oder Strg+V. Es erscheint NICHTS - das ist Absicht.'
+        Sag 'Bitte KEIN Foto und keinen Screenshot von diesem Fenster machen, solange' 'Yellow'
+        Sag 'das Token zu sehen ist. Wer das Bild hat, hat das Token.' 'Yellow'
+        Sag '------------------------------------------------------------------' 'White'
         Sag ''
         for ($i = 1; $i -le 3 -and -not $wert; $i++) {
             $sicher = Read-Host -AsSecureString 'Token hier einfuegen (Rechtsklick oder Strg+V), dann Enter. Leer = abbrechen'
