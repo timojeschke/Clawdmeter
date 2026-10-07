@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from daemon.claude_usage_daemon_windows import _extract_access_token, read_token, _windows_credential_candidates, _read_expiry
+from daemon.claude_usage_daemon_windows import _extract_access_token, read_anmelde_token, read_token, _windows_credential_candidates, _read_expiry
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -232,3 +232,18 @@ def test_main_emits_linux_warning_before_loop(monkeypatch):
         assert "WinRT BLE will not be available" in partial_stderr, (
             f"Expected Linux/WSL warning in stderr before scan loop, got: {partial_stderr!r}"
         )
+
+
+def test_anmelde_token_bleibt_lesbar_wenn_langlebiges_token_gesetzt_ist(
+        tmp_path, monkeypatch):
+    """Regression 2026-10-07: mit setup-token antwortete der Usage-Endpunkt 403.
+
+    Die Fable-Zeile (fn/fp) fiel weg, sobald CLAWDMETER_OAUTH_TOKEN gesetzt
+    war. Der Abruf dieser Zeile braucht weiter Claude Codes eigenes Token.
+    """
+    creds = tmp_path / ".credentials.json"
+    creds.write_text(json.dumps({"accessToken": "sk-ant-test-DATEI"}))
+    monkeypatch.setenv("CLAUDE_CREDENTIALS_PATH", str(creds))
+    monkeypatch.setenv("CLAWDMETER_OAUTH_TOKEN", "sk-ant-oat-LANGLEBIG")
+    assert read_token() == "sk-ant-oat-LANGLEBIG"
+    assert read_anmelde_token() == "sk-ant-test-DATEI"

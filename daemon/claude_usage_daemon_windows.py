@@ -736,6 +736,16 @@ def read_token() -> str | None:
     """
     if (eigenes := os.environ.get("CLAWDMETER_OAUTH_TOKEN", "").strip()):
         return eigenes
+    return read_anmelde_token()
+
+
+def read_anmelde_token() -> str | None:
+    """Claude Code's own short-lived access token from its credentials file.
+
+    Also the token for the usage endpoint: measured 2026-10-07, a setup-token
+    is answered there with HTTP 403 while the rate-limit headers work, so the
+    per-model line vanished as soon as CLAWDMETER_OAUTH_TOKEN was set.
+    """
     for path in _windows_credential_candidates():
         try:
             token = _extract_access_token(path.read_text(encoding="utf-8"))
@@ -964,7 +974,7 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         letzter_poll_erfolg = time.time()
                         # Only on the slow beat: this is a second HTTP call and
                         # a weekly figure does not move between two 10 s ticks.
-                        scoped = await poll_scoped_limit(token)
+                        scoped = await poll_scoped_limit(read_anmelde_token() or token)
                         if scoped:
                             payload["fn"], payload["fp"] = scoped[0][:10], scoped[1]
                         letzte_nutzlast = dict(payload)
