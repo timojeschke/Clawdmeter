@@ -1524,6 +1524,16 @@ void ui_show_screen(screen_t screen) {
 
     current_screen = screen;
     apply_battery_visibility();
+
+    // Der Splash zeichnet auf Boards ohne PSRAM am LVGL vorbei direkt aufs
+    // Panel und wartet dafuer auf den naechsten splash_tick(). Ob LVGL bis
+    // dahin den schwarzen Grund schon gemalt hat, hing am Refresh-Timer: War
+    // er noch nicht faellig, stand das Maennchen kurz ueber der alten Seite
+    // und wurde gleich darauf schwarz ueberwischt. Timo, 2026-10-07: "dann
+    // blitzt das einmal so auf, das ist nicht smooth." Deshalb den Grund
+    // sofort zeichnen, dann ist die Reihenfolge fest: alte Seite, schwarz,
+    // Maennchen.
+    if (wechsel && screen == SCREEN_SPLASH) lv_refr_now(NULL);
 }
 
 void ui_next_screen(void) {
