@@ -82,3 +82,37 @@ beenden. Sonst über den Task-Manager: `claude.exe` **und** das übergeordnete
 | Timo-PC ist nicht mehr erreichbar | Entweder hat die Sitzung ihre Remote-Control-Verbindung verloren und läuft weiter — dann „Fenster öffnen" (siehe oben). Oder Claude Code startet nicht durch — dann wächst `claude-neustarts.log`. |
 | Meldungsfenster „claude-start.cmd nicht gefunden" | Die `.cmd` liegt woanders als in `%USERPROFILE%` |
 | Alles still, keine Log-Zeile | Die Verknüpfung zeigt noch aufs alte Ziel, oder `wscript.exe` fehlt im Ziel |
+
+## Stand 2026-10-07: geplante Aufgabe, Rückfall und Protokoll
+
+Der Autostart läuft auf Timos PC seit 2026-10-07 nicht mehr über die
+Autostart-Verknüpfung, sondern über die geplante Aufgabe „Claude Code
+Hintergrund (Admin)" mit höchsten Rechten. Die Abschnitte oben beschreiben den
+Weg davor. Bei der ersten Anmeldung mit dem neuen Weg lief keine Sitzung
+(Boot 17:04, von Hand gestartet 17:22); warum, ließ sich nicht mehr
+feststellen, weil der Aufgabenverlauf in Windows abgeschaltet war. Daraus:
+
+- `claude-start-unsichtbar.vbs` schreibt jeden Aufruf nach
+  `%USERPROFILE%\claude-autostart.log` und erkennt zusätzlich ein `claude.exe`
+  mit `--remote-control` oder mit nicht lesbarer Befehlszeile (Admin-Sitzung
+  aus normaler Sicht).
+- `claude-start-rueckfall.vbs` liegt im Autostart-Ordner. 90 s nach der
+  Anmeldung prüft es, ob eine Sitzung läuft, löst sonst die Aufgabe aus und
+  startet nach weiteren 20 s notfalls ohne Adminrechte.
+- `claude-neustart-admin.vbs` beendet die laufende Kette und löst die Aufgabe
+  neu aus.
+
+**Nur mit entschärften Kopien geprüft.** Scharf läuft der Rückfall erst bei
+der nächsten Anmeldung.
+
+## Langlebiges Token für den Daemon
+
+`Clawdmeter-Token-einrichten.cmd` (ruft die gleichnamige `.ps1`) führt
+`claude setup-token` aus, nimmt den Wert verdeckt entgegen, schreibt ihn in die
+Benutzervariable `CLAWDMETER_OAUTH_TOKEN` und startet den Daemon neu. Mit
+`-Entfernen` wird die Variable gelöscht und der alte Weg gilt wieder. Der Wert
+steht nie in einer Datei, einem Protokoll oder einer Befehlszeile. Der Helfer
+läuft außerhalb jeder Claude-Sitzung.
+
+**Unerprobt:** ob ein setup-token für die Nutzungsabfrage taugt. Bei
+`HTTP 401` oder `403` bietet der Helfer das Entfernen selbst an.
