@@ -434,6 +434,20 @@ build_payload_for_token() {
                 wr = (r7 - now) / 60; wr = wr > 0 ? sprintf("%.0f", wr) : 0;
                 printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s,\"ok\":true}", sp, sr, wp, wr, st, clk, chm;
             }')
+    elif [ -n "$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-utilization")" ]; then
+        # Weekly-only plan (no 5h limit): weekly window, no "sr" (firmware shows "---")
+        local s7d_util s7d_reset s7d_status
+        s7d_util=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-utilization" | tr -d '\r' | awk '{print $2}')
+        s7d_reset=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-reset" | tr -d '\r' | awk '{print $2}')
+        s7d_status=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-status" | tr -d '\r' | awk '{print $2}')
+        s7d_util=${s7d_util:-0}; s7d_reset=${s7d_reset:-0}
+        s7d_status=${s7d_status:-$status}
+        payload=$(awk -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$s7d_status" -v now="$now" -v clk="$clock_fragment" -v chm="$chime_fragment" \
+            'BEGIN {
+                wp = sprintf("%.0f", u7 * 100);
+                wr = (r7 - now) / 60; wr = wr > 0 ? sprintf("%.0f", wr) : 0;
+                printf "{\"s\":0,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s,\"ok\":true}", wp, wr, st, clk, chm;
+            }')
     else
         # Enterprise account — spending-limit model
         overage_util=${overage_util:-0}; overage_reset=${overage_reset:-0}

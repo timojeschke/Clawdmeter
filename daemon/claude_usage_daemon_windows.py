@@ -375,6 +375,7 @@ async def poll_api(token: str) -> dict | None:
         # else (5xx, a 429 without headers) is transient: skip this tick.
         has_limits = bool(
             resp.headers.get("anthropic-ratelimit-unified-5h-utilization")
+            or resp.headers.get("anthropic-ratelimit-unified-7d-utilization")
             or resp.headers.get("anthropic-ratelimit-unified-overage-utilization")
         )
         if resp.status_code != 429 or not has_limits:
@@ -410,6 +411,19 @@ async def poll_api(token: str) -> dict | None:
             "w": pct(hdr("anthropic-ratelimit-unified-7d-utilization")),
             "wr": reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset")),
             "st": hdr("anthropic-ratelimit-unified-5h-status", "unknown"),
+            "acct": "pro",
+            "ok": True,
+        }
+    elif resp.headers.get("anthropic-ratelimit-unified-7d-utilization"):
+        # Weekly-only plan (no 5-hour session limit): show the weekly window.
+        # "sr" is left out on purpose, the firmware then shows "---" for the
+        # session reset instead of a misleading "0m".
+        payload = {
+            "s": 0,
+            "w": pct(hdr("anthropic-ratelimit-unified-7d-utilization")),
+            "wr": reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset")),
+            "st": hdr("anthropic-ratelimit-unified-7d-status",
+                      hdr("anthropic-ratelimit-unified-status", "unknown")),
             "acct": "pro",
             "ok": True,
         }

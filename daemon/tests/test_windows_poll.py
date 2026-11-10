@@ -464,3 +464,83 @@ def test_poll_api_does_not_log_token(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert secret_token not in captured.out, "Token leaked to stdout (T-02-01 violation)"
     assert secret_token not in captured.err, "Token leaked to stderr (T-02-01 violation)"
+
+
+# ---------------------------------------------------------------------------
+# Test: account kind by header set (5h+7d, weekly-only, overage-only)
+# ---------------------------------------------------------------------------
+
+def _poll_with_headers(headers, status_code=200):
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(
+        return_value=_make_mock_response(status_code=status_code, headers=headers))
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        return _run(poll_api("fake-token"))
+
+
+def _weekly_only_headers(now, utilization="0.06", status="allowed"):
+    return {
+        "anthropic-ratelimit-unified-7d-utilization": utilization,
+        "anthropic-ratelimit-unified-7d-reset": str(now + 86400),
+        "anthropic-ratelimit-unified-7d-status": status,
+        "anthropic-ratelimit-unified-status": status,
+        "anthropic-ratelimit-unified-reset": str(now + 86400),
+        "anthropic-ratelimit-unified-overage-status": "rejected",
+    }
+
+
+def test_poll_api_weekly_only_plan_is_pro_without_session_reset():
+    """No 5h headers but 7d present: pro screen with the weekly window."""
+    payload = _poll_with_headers(_weekly_only_headers(time.time()))
+
+    assert payload["acct"] == "pro"
+    assert payload["s"] == 0
+    assert payload["w"] == 6
+    assert abs(payload["wr"] - 1440) <= 1
+    assert payload["st"] == "allowed"
+    assert "sr" not in payload  # firmware default -1 renders "---"
+    assert "tp" not in payload and "rd" not in payload  # no billing-period fields
+
+
+def test_poll_api_weekly_only_plan_reports_429_at_limit():
+    """At the weekly limit the 429 reading is reported, not dropped."""
+    headers = _weekly_only_headers(time.time(), utilization="1.0", status="rejected")
+    payload = _poll_with_headers(headers, status_code=429)
+
+    assert payload is not None
+    assert payload["acct"] == "pro"
+    assert payload["w"] == 100
+    assert payload["st"] == "rejected"
+
+
+def test_poll_api_overage_only_keeps_enterprise_screen():
+    """Neither 5h nor 7d present: the enterprise (spend limit) branch stays."""
+    now = time.time()
+    payload = _poll_with_headers({
+        "anthropic-ratelimit-unified-overage-utilization": "0.30",
+        "anthropic-ratelimit-unified-overage-reset": str(now + 86400),
+        "anthropic-ratelimit-unified-status": "allowed",
+    })
+
+    assert payload["acct"] == "ent"
+    assert payload["s"] == 30
+    assert payload["w"] == 0
+    assert "tp" in payload and "rd" in payload
+
+
+def test_poll_api_five_hour_plan_unchanged_when_7d_present():
+    """5h + 7d present: classic pro payload with session reset."""
+    now = time.time()
+    payload = _poll_with_headers({
+        "anthropic-ratelimit-unified-5h-utilization": "0.42",
+        "anthropic-ratelimit-unified-5h-reset": str(now + 3600),
+        "anthropic-ratelimit-unified-5h-status": "allowed",
+        "anthropic-ratelimit-unified-7d-utilization": "0.10",
+        "anthropic-ratelimit-unified-7d-reset": str(now + 86400),
+    })
+
+    assert payload["acct"] == "pro"
+    assert (payload["s"], payload["w"]) == (42, 10)
+    assert abs(payload["sr"] - 60) <= 1
