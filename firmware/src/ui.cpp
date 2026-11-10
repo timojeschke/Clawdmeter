@@ -456,6 +456,23 @@ static void format_reset_time(int mins, char* buf, size_t len) {
     }
 }
 
+// Cents as "37" or "37,50" (whole units when there is no remainder).
+static void format_money(int cents, char* buf, size_t len) {
+    if (cents % 100 == 0) snprintf(buf, len, "%d", cents / 100);
+    else                  snprintf(buf, len, "%d,%02d", cents / 100, cents % 100);
+}
+
+// Ultra "Monat" subtitle: "37 von 100 EUR" plus " · aus" when extra usage is
+// off. The euro sign is not in the bundled fonts, so the ISO code is shown.
+static void format_extra_subtitle(const UsageData* d, char* buf, size_t len) {
+    if (!d->extra_valid) { snprintf(buf, len, "---"); return; }
+    char used[16], limit[16];
+    format_money(d->extra_used, used, sizeof(used));
+    format_money(d->extra_limit, limit, sizeof(limit));
+    snprintf(buf, len, "%s von %s %s%s", used, limit, d->extra_cur,
+             d->extra_enabled ? "" : " \xC2\xB7 aus");
+}
+
 // Forward decls — callbacks defined near ui_show_screen below
 static void global_click_cb(lv_event_t* e);
 
@@ -1224,7 +1241,7 @@ void ui_update(const UsageData* data) {
         if (panel_weekly) lv_obj_clear_flag(panel_weekly, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_set_style_text_font(lbl_session_pct, L.pct_font, 0);
-        lv_label_set_text(lbl_session_label, "Current");
+        lv_label_set_text(lbl_session_label, data->weekly_only ? "Woche" : "Current");
         lv_obj_clear_flag(lbl_session_reset, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_spending_desc,   LV_OBJ_FLAG_HIDDEN);
@@ -1248,6 +1265,12 @@ void ui_update(const UsageData* data) {
         lv_label_set_text_fmt(lbl_session_pct, "%d", s_pct);
         lv_obj_align_to(lbl_session_pct_sym, lbl_session_pct,
                         LV_ALIGN_OUT_RIGHT_TOP, 4, 12);
+    } else if (data->weekly_only) {
+        // Ultra: panel 1 carries the weekly window
+        s_pct = (int)(data->weekly_pct + 0.5f);
+        lv_label_set_text_fmt(lbl_session_pct, "%d%%", s_pct);
+        format_reset_time(data->weekly_reset_mins, buf, sizeof(buf));
+        lv_label_set_text(lbl_session_reset, buf);
     } else {
         lv_label_set_text_fmt(lbl_session_pct, "%d%%", s_pct);
         format_reset_time(data->session_reset_mins, buf, sizeof(buf));
@@ -1255,7 +1278,9 @@ void ui_update(const UsageData* data) {
     }
 
     lv_bar_set_value(bar_session, s_pct, LV_ANIM_ON);
-    lv_obj_set_style_bg_color(bar_session, pct_color(data->session_pct), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(bar_session,
+        pct_color(data->weekly_only && !data->enterprise ? data->weekly_pct : data->session_pct),
+        LV_PART_INDICATOR);
 
     if (data->enterprise) {
         // Period box: time % + dynamic pace color + "Resets <date>" label
@@ -1269,8 +1294,22 @@ void ui_update(const UsageData* data) {
         snprintf(buf, sizeof(buf), "#%s %s# - #faf9f5 Resets %s#",
                  pace_hex, pace_text, data->reset_date);
         lv_label_set_text(lbl_weekly_reset, buf);
+    } else if (data->weekly_only) {
+        // Ultra: panel 2 is the monthly extra-usage budget
+        lv_label_set_text(lbl_weekly_label, "Monat");
+        if (data->extra_valid) {
+            lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", data->extra_pct);
+            lv_bar_set_value(bar_weekly, data->extra_pct, LV_ANIM_ON);
+            lv_obj_set_style_bg_color(bar_weekly, pct_color((float)data->extra_pct), LV_PART_INDICATOR);
+        } else {
+            lv_label_set_text(lbl_weekly_pct, "---");
+            lv_bar_set_value(bar_weekly, 0, LV_ANIM_ON);
+        }
+        format_extra_subtitle(data, buf, sizeof(buf));
+        lv_label_set_text(lbl_weekly_reset, buf);
     } else {
         int w_pct = (int)(data->weekly_pct + 0.5f);
+        lv_label_set_text(lbl_weekly_label, "Weekly");
         lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", w_pct);
         lv_bar_set_value(bar_weekly, w_pct, LV_ANIM_ON);
         lv_obj_set_style_bg_color(bar_weekly, pct_color(data->weekly_pct), LV_PART_INDICATOR);

@@ -30,6 +30,17 @@ struct UsageData {
     char scoped_name[12];
     int  scoped_pct;
 
+    // Ultra plan (acct "ul"): no 5-hour window, only the weekly limit plus a
+    // monthly extra-usage (spend) budget. Amounts are minor units (cents).
+    // extra_valid stays false when the daemon could not read the spend data.
+    bool weekly_only;
+    bool extra_valid;
+    int  extra_used;         // cents spent this month
+    int  extra_limit;        // cents, monthly budget
+    bool extra_enabled;
+    int  extra_pct;          // 0-100
+    char extra_cur[4];       // ISO currency, "EUR" unless the daemon says otherwise
+
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
 

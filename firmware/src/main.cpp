@@ -115,6 +115,14 @@ static bool parse_json(const char* json, UsageData* out) {
     out->chime = doc["c"] | false;   // absent (old daemon / chime off) → stay silent
     const char* acct = doc["acct"] | "pro";
     out->enterprise = (strcmp(acct, "ent") == 0);
+    out->weekly_only = (strcmp(acct, "ul") == 0);
+    // Spend data: optional, absent means unknown (UI shows a dash, not 0).
+    out->extra_valid = doc["xu"].is<int>() && doc["xl"].is<int>();
+    out->extra_used = doc["xu"] | 0;
+    out->extra_limit = doc["xl"] | 0;
+    out->extra_enabled = (doc["xe"] | 0) != 0;
+    out->extra_pct = doc["xp"] | 0;
+    strlcpy(out->extra_cur, doc["xc"] | "EUR", sizeof(out->extra_cur));
     out->time_pct = doc["tp"] | 0;
     out->period_days = doc["pd"] | 30;
     strlcpy(out->reset_date, doc["rd"] | "", sizeof(out->reset_date));

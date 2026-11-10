@@ -300,31 +300,8 @@ async def add_session_fields_paar(payload: dict) -> tuple[dict, dict]:
             merge_into_payload(payload, state))
 
 
-async def poll_scoped_limit(token: str) -> tuple[str, int] | None:
-    """The per-model weekly limit, as (display name, percent), or None.
-
-    Returns None on any failure and on the absence of a scoped limit — this is
-    an extra reading and must never cost the device its usage numbers.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.get(USAGE_URL, headers={
-                "Authorization": f"Bearer {token}",
-                "anthropic-beta": "oauth-2025-04-20",
-                "User-Agent": "claude-code/2.1.5",
-                "Accept": "application/json",
-            })
-    except httpx.HTTPError as e:
-        log(f"usage endpoint failed: {e}")
-        return None
-    if resp.status_code != 200:
-        log(f"usage endpoint HTTP {resp.status_code}")
-        return None
-    try:
-        daten = resp.json()
-    except ValueError:
-        return None
-
+def _scoped_aus(daten) -> tuple[str, int] | None:
+    """Pulls the per-model weekly limit out of a usage response, or None."""
     # Fremddaten: JSON darf eine Liste oder null sein, `limits` ein Text, und
     # `scope`/`model` duerfen fehlen oder etwas anderes als ein Objekt sein.
     # Nichts davon darf die Schleife in connect_and_run treffen.
@@ -344,6 +321,75 @@ async def poll_scoped_limit(token: str) -> tuple[str, int] | None:
                 and math.isfinite(prozent)):
             return str(modell), int(round(prozent))
     return None
+
+
+def _zahl_aus(wert) -> int | None:
+    """A finite number as int; bool, text, NaN and None give None."""
+    if isinstance(wert, bool) or not isinstance(wert, (int, float)):
+        return None
+    if not math.isfinite(wert):
+        return None
+    return int(round(wert))
+
+
+def _extra_aus(daten) -> dict | None:
+    """The monthly extra-usage (spend) block as compact payload fields, or None.
+
+    Amounts are minor units (cents). The API shows no currency field in the
+    data seen so far; one is passed through as "xc" only if it appears.
+    """
+    extra = daten.get("extra_usage") if isinstance(daten, dict) else None
+    if not isinstance(extra, dict):
+        return None
+    limit = _zahl_aus(extra.get("monthly_limit"))
+    benutzt = _zahl_aus(extra.get("used_credits"))
+    if limit is None or benutzt is None:
+        return None
+    prozent = _zahl_aus(extra.get("utilization"))
+    if prozent is None:
+        prozent = benutzt * 100 // limit if limit > 0 else 0
+    felder = {
+        "xu": max(0, benutzt),
+        "xl": max(0, limit),
+        "xe": 1 if extra.get("is_enabled") is True else 0,
+        "xp": max(0, min(100, prozent)),
+    }
+    waehrung = extra.get("currency")
+    if isinstance(waehrung, str) and waehrung.isalpha() and len(waehrung) == 3:
+        felder["xc"] = waehrung.upper()
+    return felder
+
+
+async def poll_usage(token: str) -> tuple[tuple[str, int] | None, dict | None]:
+    """One call to the usage endpoint: (scoped limit, extra-usage fields).
+
+    Each part is None on any failure or absence — this is an extra reading and
+    must never cost the device its usage numbers.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(USAGE_URL, headers={
+                "Authorization": f"Bearer {token}",
+                "anthropic-beta": "oauth-2025-04-20",
+                "User-Agent": "claude-code/2.1.5",
+                "Accept": "application/json",
+            })
+    except httpx.HTTPError as e:
+        log(f"usage endpoint failed: {e}")
+        return None, None
+    if resp.status_code != 200:
+        log(f"usage endpoint HTTP {resp.status_code}")
+        return None, None
+    try:
+        daten = resp.json()
+    except ValueError:
+        return None, None
+    return _scoped_aus(daten), _extra_aus(daten)
+
+
+async def poll_scoped_limit(token: str) -> tuple[str, int] | None:
+    """The per-model weekly limit, as (display name, percent), or None."""
+    return (await poll_usage(token))[0]
 
 
 async def poll_api(token: str) -> dict | None:
@@ -415,7 +461,8 @@ async def poll_api(token: str) -> dict | None:
             "ok": True,
         }
     elif resp.headers.get("anthropic-ratelimit-unified-7d-utilization"):
-        # Weekly-only plan (no 5-hour session limit): show the weekly window.
+        # Weekly-only plan (no 5-hour session limit, "Ultra"): the device shows
+        # Weekly + Monthly (extra usage); the x* fields come from the usage call.
         # "sr" is left out on purpose, the firmware then shows "---" for the
         # session reset instead of a misleading "0m".
         payload = {
@@ -424,7 +471,7 @@ async def poll_api(token: str) -> dict | None:
             "wr": reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset")),
             "st": hdr("anthropic-ratelimit-unified-7d-status",
                       hdr("anthropic-ratelimit-unified-status", "unknown")),
-            "acct": "pro",
+            "acct": "ul",
             "ok": True,
         }
     else:
@@ -988,9 +1035,11 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         letzter_poll_erfolg = time.time()
                         # Only on the slow beat: this is a second HTTP call and
                         # a weekly figure does not move between two 10 s ticks.
-                        scoped = await poll_scoped_limit(read_anmelde_token() or token)
+                        scoped, extra = await poll_usage(read_anmelde_token() or token)
                         if scoped:
                             payload["fn"], payload["fp"] = scoped[0][:10], scoped[1]
+                        if extra and payload.get("acct") == "ul":
+                            payload.update(extra)
                         letzte_nutzlast = dict(payload)
                         payload, payload_sicher = await add_session_fields_paar(payload)
                         gesendet = await session.write_payload(payload, payload_sicher)

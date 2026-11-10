@@ -13,7 +13,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from daemon.claude_usage_daemon_windows import AuthError, poll_api
+from daemon.claude_usage_daemon_windows import (
+    AuthError, poll_api, poll_usage)
+from daemon.sessions_source import PAYLOAD_LIMIT_GROSS, merge_into_payload
 
 
 # ---------------------------------------------------------------------------
@@ -492,10 +494,10 @@ def _weekly_only_headers(now, utilization="0.06", status="allowed"):
 
 
 def test_poll_api_weekly_only_plan_is_pro_without_session_reset():
-    """No 5h headers but 7d present: pro screen with the weekly window."""
+    """No 5h headers but 7d present: Ultra kind ("ul") with the weekly window."""
     payload = _poll_with_headers(_weekly_only_headers(time.time()))
 
-    assert payload["acct"] == "pro"
+    assert payload["acct"] == "ul"
     assert payload["s"] == 0
     assert payload["w"] == 6
     assert abs(payload["wr"] - 1440) <= 1
@@ -510,7 +512,7 @@ def test_poll_api_weekly_only_plan_reports_429_at_limit():
     payload = _poll_with_headers(headers, status_code=429)
 
     assert payload is not None
-    assert payload["acct"] == "pro"
+    assert payload["acct"] == "ul"
     assert payload["w"] == 100
     assert payload["st"] == "rejected"
 
@@ -544,3 +546,80 @@ def test_poll_api_five_hour_plan_unchanged_when_7d_present():
     assert payload["acct"] == "pro"
     assert (payload["s"], payload["w"]) == (42, 10)
     assert abs(payload["sr"] - 60) <= 1
+
+
+# ---------------------------------------------------------------------------
+# Ultra: Monatsverbrauch (extra_usage) aus dem Usage-Endpunkt
+# ---------------------------------------------------------------------------
+
+def _usage_mit(status, koerper):
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    antwort = MagicMock()
+    antwort.status_code = status
+    antwort.json = MagicMock(return_value=koerper)
+    mock_client.get = AsyncMock(return_value=antwort)
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        return _run(poll_usage("fake-token"))
+
+
+_FABLE = {"limits": [{"kind": "weekly_scoped", "percent": 0,
+                      "scope": {"model": {"display_name": "Fable"}}}]}
+
+
+@pytest.mark.parametrize("extra, erwartet", [
+    ({"monthly_limit": 10000, "used_credits": 0, "utilization": 0,
+      "is_enabled": False, "disabled_reason": "out_of_credits"},
+     {"xu": 0, "xl": 10000, "xe": 0, "xp": 0}),
+    ({"monthly_limit": 10000, "used_credits": 3700, "utilization": 37.0,
+      "is_enabled": True},
+     {"xu": 3700, "xl": 10000, "xe": 1, "xp": 37}),
+    # Keine Prozentangabe: aus Verbrauch und Limit gerechnet.
+    ({"monthly_limit": 5000, "used_credits": 1000, "is_enabled": True},
+     {"xu": 1000, "xl": 5000, "xe": 1, "xp": 20}),
+    # Waehrung nur durchreichen, wenn die API sie nennt.
+    ({"monthly_limit": 10000, "used_credits": 0, "utilization": 0,
+      "is_enabled": True, "currency": "eur"},
+     {"xu": 0, "xl": 10000, "xe": 1, "xp": 0, "xc": "EUR"}),
+    ({"monthly_limit": None, "used_credits": 0}, None),
+    ("viel", None),
+    (None, None),
+])
+def test_poll_usage_liest_extra_usage(extra, erwartet):
+    scoped, felder = _usage_mit(200, dict(_FABLE, extra_usage=extra))
+    assert scoped == ("Fable", 0)
+    assert felder == erwartet
+
+
+@pytest.mark.parametrize("status", [403, 429, 500])
+def test_poll_usage_fehler_liefert_nichts(status):
+    assert _usage_mit(status, {}) == (None, None)
+
+
+def test_ultra_nutzlast_mit_sessionfeldern_passt_in_den_puffer():
+    """Ultra-Nutzlast + x*-Felder + Sessionnamen bleibt unter 512 Byte."""
+    payload = _poll_with_headers(_weekly_only_headers(time.time()))
+    _, felder = _usage_mit(200, dict(_FABLE, extra_usage={
+        "monthly_limit": 10000, "used_credits": 3700, "utilization": 37.0,
+        "is_enabled": True}))
+    payload.update(felder)
+    payload["fn"], payload["fp"] = "Fable", 0
+    daten = {"anzahl": {"wartet": 1, "arbeitet": 3, "hintergrund": 1, "geparkt": 0},
+             "sessions": [], "frisch": True, "alter_sekunden": 1}
+    voll = merge_into_payload(payload, daten, PAYLOAD_LIMIT_GROSS)
+    laenge = len(json.dumps(voll, separators=(",", ":")).encode("utf-8"))
+    assert laenge < 512
+    assert payload["acct"] == "ul" and payload["xp"] == 37
+
+
+def test_max_nutzlast_hat_keine_ultra_felder():
+    now = time.time()
+    payload = _poll_with_headers({
+        "anthropic-ratelimit-unified-5h-utilization": "0.42",
+        "anthropic-ratelimit-unified-5h-reset": str(now + 3600),
+        "anthropic-ratelimit-unified-7d-utilization": "0.10",
+        "anthropic-ratelimit-unified-7d-reset": str(now + 86400),
+    })
+    assert payload["acct"] == "pro"
+    assert not {"xu", "xl", "xe", "xp", "xc"} & payload.keys()
