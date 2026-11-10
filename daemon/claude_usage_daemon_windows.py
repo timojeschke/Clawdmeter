@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 from bleak import BleakClient
@@ -81,7 +82,7 @@ HERZSCHLAG_S = 60
 # Felder, die sich von selbst mit der Zeit aendern. Sie zaehlen beim Vergleich
 # "hat sich etwas geaendert?" nicht mit, sonst schriebe der Takt alle drei
 # Sekunden, weil `t` weiterlaeuft.
-ZEITFELDER = ("t", "sr", "wr")
+ZEITFELDER = ("t", "sr", "wr", "fr")
 # Die Schleife wacht jede Sekunde auf. Sie tut dabei fast nichts — Zeiten
 # vergleichen und auf ein Ereignis warten — und sie ist die Obergrenze fuer
 # jeden schnelleren Takt darunter: Bei TICK = 5 haette ein
@@ -300,7 +301,33 @@ async def add_session_fields_paar(payload: dict) -> tuple[dict, dict]:
             merge_into_payload(payload, state))
 
 
-def _scoped_aus(daten) -> tuple[str, int] | None:
+def _minuten_bis(reset_ts: float, now: float) -> int:
+    """Whole minutes from `now` to a Unix timestamp, 0 if already past."""
+    mins = (reset_ts - now) / 60.0
+    return int(round(mins)) if mins > 0 else 0
+
+
+def _reset_minuten_aus(text, now: float) -> int | None:
+    """Minutes until an ISO-8601 `resets_at`, or None if missing or unparseable."""
+    if not isinstance(text, str):
+        return None
+    try:
+        zeit = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if zeit.tzinfo is None:
+        zeit = zeit.replace(tzinfo=datetime.timezone.utc)
+    return _minuten_bis(zeit.timestamp(), now)
+
+
+class ScopedLimit(NamedTuple):
+    """Per-model weekly limit; `reset_min` is None without a usable resets_at."""
+    name: str
+    prozent: int
+    reset_min: int | None = None
+
+
+def _scoped_aus(daten, now: float | None = None) -> ScopedLimit | None:
     """Pulls the per-model weekly limit out of a usage response, or None."""
     # Fremddaten: JSON darf eine Liste oder null sein, `limits` ein Text, und
     # `scope`/`model` duerfen fehlen oder etwas anderes als ein Objekt sein.
@@ -319,52 +346,17 @@ def _scoped_aus(daten) -> tuple[str, int] | None:
         prozent = eintrag.get("percent")
         if (modell and isinstance(prozent, (int, float))
                 and math.isfinite(prozent)):
-            return str(modell), int(round(prozent))
+            reset = _reset_minuten_aus(
+                eintrag.get("resets_at"), time.time() if now is None else now)
+            return ScopedLimit(str(modell), int(round(prozent)), reset)
     return None
 
 
-def _zahl_aus(wert) -> int | None:
-    """A finite number as int; bool, text, NaN and None give None."""
-    if isinstance(wert, bool) or not isinstance(wert, (int, float)):
-        return None
-    if not math.isfinite(wert):
-        return None
-    return int(round(wert))
+async def poll_usage(token: str) -> ScopedLimit | None:
+    """One call to the usage endpoint: the scoped weekly limit, or None.
 
-
-def _extra_aus(daten) -> dict | None:
-    """The monthly extra-usage (spend) block as compact payload fields, or None.
-
-    Amounts are minor units (cents). The API shows no currency field in the
-    data seen so far; one is passed through as "xc" only if it appears.
-    """
-    extra = daten.get("extra_usage") if isinstance(daten, dict) else None
-    if not isinstance(extra, dict):
-        return None
-    limit = _zahl_aus(extra.get("monthly_limit"))
-    benutzt = _zahl_aus(extra.get("used_credits"))
-    if limit is None or benutzt is None:
-        return None
-    prozent = _zahl_aus(extra.get("utilization"))
-    if prozent is None:
-        prozent = benutzt * 100 // limit if limit > 0 else 0
-    felder = {
-        "xu": max(0, benutzt),
-        "xl": max(0, limit),
-        "xe": 1 if extra.get("is_enabled") is True else 0,
-        "xp": max(0, min(100, prozent)),
-    }
-    waehrung = extra.get("currency")
-    if isinstance(waehrung, str) and waehrung.isalpha() and len(waehrung) == 3:
-        felder["xc"] = waehrung.upper()
-    return felder
-
-
-async def poll_usage(token: str) -> tuple[tuple[str, int] | None, dict | None]:
-    """One call to the usage endpoint: (scoped limit, extra-usage fields).
-
-    Each part is None on any failure or absence — this is an extra reading and
-    must never cost the device its usage numbers.
+    None on any failure or absence — this is an extra reading and must never
+    cost the device its usage numbers.
     """
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
@@ -376,20 +368,21 @@ async def poll_usage(token: str) -> tuple[tuple[str, int] | None, dict | None]:
             })
     except httpx.HTTPError as e:
         log(f"usage endpoint failed: {e}")
-        return None, None
+        return None
     if resp.status_code != 200:
         log(f"usage endpoint HTTP {resp.status_code}")
-        return None, None
+        return None
     try:
         daten = resp.json()
     except ValueError:
-        return None, None
-    return _scoped_aus(daten), _extra_aus(daten)
+        return None
+    return _scoped_aus(daten)
 
 
 async def poll_scoped_limit(token: str) -> tuple[str, int] | None:
     """The per-model weekly limit, as (display name, percent), or None."""
-    return (await poll_usage(token))[0]
+    gelesen = await poll_usage(token)
+    return None if gelesen is None else (gelesen.name, gelesen.prozent)
 
 
 async def poll_api(token: str) -> dict | None:
@@ -439,8 +432,7 @@ async def poll_api(token: str) -> dict | None:
             r = float(reset_ts)
         except ValueError:
             return 0
-        mins = (r - now) / 60.0
-        return int(round(mins)) if mins > 0 else 0
+        return _minuten_bis(r, now)
 
     def pct(util: str) -> int:
         # Clamped: at the limit the reported utilization can edge past 1.0,
@@ -462,7 +454,7 @@ async def poll_api(token: str) -> dict | None:
         }
     elif resp.headers.get("anthropic-ratelimit-unified-7d-utilization"):
         # Weekly-only plan (no 5-hour session limit, "Ultra"): the device shows
-        # Weekly + Monthly (extra usage); the x* fields come from the usage call.
+        # the weekly figure only; the monthly spend limit is not shown (Timo, 2026-11-10).
         # "sr" is left out on purpose, the firmware then shows "---" for the
         # session reset instead of a misleading "0m".
         payload = {
@@ -903,7 +895,7 @@ def basis_nutzlast(letzte_nutzlast: dict | None, letzter_erfolg: float | None,
     if _ist_zahl(nutzlast.get("t")):
         nutzlast["t"] = int(nutzlast["t"] + vergangen)
     minuten = int(vergangen // 60)
-    for feld in ("sr", "wr"):
+    for feld in ("sr", "wr", "fr"):
         wert = nutzlast.get(feld)
         if _ist_zahl(wert) and wert >= 0:
             nutzlast[feld] = max(0, int(wert) - minuten)
@@ -1035,11 +1027,11 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                         letzter_poll_erfolg = time.time()
                         # Only on the slow beat: this is a second HTTP call and
                         # a weekly figure does not move between two 10 s ticks.
-                        scoped, extra = await poll_usage(read_anmelde_token() or token)
+                        scoped = await poll_usage(read_anmelde_token() or token)
                         if scoped:
-                            payload["fn"], payload["fp"] = scoped[0][:10], scoped[1]
-                        if extra and payload.get("acct") == "ul":
-                            payload.update(extra)
+                            payload["fn"], payload["fp"] = scoped.name[:10], scoped.prozent
+                            if scoped.reset_min is not None:
+                                payload["fr"] = scoped.reset_min
                         letzte_nutzlast = dict(payload)
                         payload, payload_sicher = await add_session_fields_paar(payload)
                         gesendet = await session.write_payload(payload, payload_sicher)

@@ -7,6 +7,7 @@ All tests mock httpx so no real network calls are made.
 Run: python -m pytest daemon/tests/test_windows_poll.py -x -q
 """
 import asyncio
+import datetime
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -549,7 +550,7 @@ def test_poll_api_five_hour_plan_unchanged_when_7d_present():
 
 
 # ---------------------------------------------------------------------------
-# Ultra: Monatsverbrauch (extra_usage) aus dem Usage-Endpunkt
+# Fable-Wochenlimit (limits[] aus dem Usage-Endpunkt) mit Reset-Minuten
 # ---------------------------------------------------------------------------
 
 def _usage_mit(status, koerper):
@@ -564,53 +565,60 @@ def _usage_mit(status, koerper):
         return _run(poll_usage("fake-token"))
 
 
-_FABLE = {"limits": [{"kind": "weekly_scoped", "percent": 0,
-                      "scope": {"model": {"display_name": "Fable"}}}]}
+def _fable(resets_at):
+    eintrag = {"kind": "weekly_scoped", "group": "weekly", "percent": 7,
+               "scope": {"model": {"id": None, "display_name": "Fable"},
+                         "surface": None}}
+    if resets_at is not ...:
+        eintrag["resets_at"] = resets_at
+    return {"limits": [eintrag]}
 
 
-@pytest.mark.parametrize("extra, erwartet", [
-    ({"monthly_limit": 10000, "used_credits": 0, "utilization": 0,
-      "is_enabled": False, "disabled_reason": "out_of_credits"},
-     {"xu": 0, "xl": 10000, "xe": 0, "xp": 0}),
-    ({"monthly_limit": 10000, "used_credits": 3700, "utilization": 37.0,
-      "is_enabled": True},
-     {"xu": 3700, "xl": 10000, "xe": 1, "xp": 37}),
-    # Keine Prozentangabe: aus Verbrauch und Limit gerechnet.
-    ({"monthly_limit": 5000, "used_credits": 1000, "is_enabled": True},
-     {"xu": 1000, "xl": 5000, "xe": 1, "xp": 20}),
-    # Waehrung nur durchreichen, wenn die API sie nennt.
-    ({"monthly_limit": 10000, "used_credits": 0, "utilization": 0,
-      "is_enabled": True, "currency": "eur"},
-     {"xu": 0, "xl": 10000, "xe": 1, "xp": 0, "xc": "EUR"}),
-    ({"monthly_limit": None, "used_credits": 0}, None),
-    ("viel", None),
-    (None, None),
-])
-def test_poll_usage_liest_extra_usage(extra, erwartet):
-    scoped, felder = _usage_mit(200, dict(_FABLE, extra_usage=extra))
-    assert scoped == ("Fable", 0)
-    assert felder == erwartet
+def _iso_in_minuten(minuten):
+    ziel = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+        minutes=minuten)
+    return ziel.isoformat()
+
+
+def test_poll_usage_liefert_fable_mit_resetminuten():
+    gelesen = _usage_mit(200, _fable(_iso_in_minuten(3 * 24 * 60)))
+    assert (gelesen.name, gelesen.prozent) == ("Fable", 7)
+    assert abs(gelesen.reset_min - 3 * 24 * 60) <= 1
+
+
+def test_poll_usage_reset_in_der_vergangenheit_wird_null():
+    assert _usage_mit(200, _fable(_iso_in_minuten(-90))).reset_min == 0
+
+
+@pytest.mark.parametrize("kaputt", [
+    ..., None, 12345, ["x"], "", "morgen", "2026-13-99T00:00:00+00:00"])
+def test_poll_usage_kaputtes_resets_at_laesst_name_und_prozent(kaputt):
+    gelesen = _usage_mit(200, _fable(kaputt))
+    assert (gelesen.name, gelesen.prozent, gelesen.reset_min) == ("Fable", 7, None)
 
 
 @pytest.mark.parametrize("status", [403, 429, 500])
 def test_poll_usage_fehler_liefert_nichts(status):
-    assert _usage_mit(status, {}) == (None, None)
+    assert _usage_mit(status, {}) is None
 
 
-def test_ultra_nutzlast_mit_sessionfeldern_passt_in_den_puffer():
-    """Ultra-Nutzlast + x*-Felder + Sessionnamen bleibt unter 512 Byte."""
-    payload = _poll_with_headers(_weekly_only_headers(time.time()))
-    _, felder = _usage_mit(200, dict(_FABLE, extra_usage={
-        "monthly_limit": 10000, "used_credits": 3700, "utilization": 37.0,
-        "is_enabled": True}))
-    payload.update(felder)
-    payload["fn"], payload["fp"] = "Fable", 0
+def test_nutzlast_mit_fable_reset_und_sessionfeldern_passt_in_den_puffer():
+    """Pro-Nutzlast + fn/fp/fr + Sessionnamen bleibt unter 512 Byte."""
+    payload = _poll_with_headers({
+        "anthropic-ratelimit-unified-5h-utilization": "0.42",
+        "anthropic-ratelimit-unified-5h-reset": str(time.time() + 3600),
+        "anthropic-ratelimit-unified-7d-utilization": "0.10",
+        "anthropic-ratelimit-unified-7d-reset": str(time.time() + 86400),
+    })
+    gelesen = _usage_mit(200, _fable(_iso_in_minuten(9999)))
+    payload["fn"], payload["fp"] = gelesen.name[:10], gelesen.prozent
+    payload["fr"] = gelesen.reset_min
     daten = {"anzahl": {"wartet": 1, "arbeitet": 3, "hintergrund": 1, "geparkt": 0},
              "sessions": [], "frisch": True, "alter_sekunden": 1}
     voll = merge_into_payload(payload, daten, PAYLOAD_LIMIT_GROSS)
+    assert voll["fr"] == payload["fr"]
     laenge = len(json.dumps(voll, separators=(",", ":")).encode("utf-8"))
     assert laenge < 512
-    assert payload["acct"] == "ul" and payload["xp"] == 37
 
 
 def test_max_nutzlast_hat_keine_ultra_felder():

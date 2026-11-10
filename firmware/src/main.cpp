@@ -116,13 +116,6 @@ static bool parse_json(const char* json, UsageData* out) {
     const char* acct = doc["acct"] | "pro";
     out->enterprise = (strcmp(acct, "ent") == 0);
     out->weekly_only = (strcmp(acct, "ul") == 0);
-    // Spend data: optional, absent means unknown (UI shows a dash, not 0).
-    out->extra_valid = doc["xu"].is<int>() && doc["xl"].is<int>();
-    out->extra_used = doc["xu"] | 0;
-    out->extra_limit = doc["xl"] | 0;
-    out->extra_enabled = (doc["xe"] | 0) != 0;
-    out->extra_pct = doc["xp"] | 0;
-    strlcpy(out->extra_cur, doc["xc"] | "EUR", sizeof(out->extra_cur));
     out->time_pct = doc["tp"] | 0;
     out->period_days = doc["pd"] | 30;
     strlcpy(out->reset_date, doc["rd"] | "", sizeof(out->reset_date));
@@ -139,6 +132,11 @@ static bool parse_json(const char* json, UsageData* out) {
         strlcpy(out->scoped_name, doc["fn"] | "", sizeof(out->scoped_name));
         out->scoped_pct = doc["fp"] | 0;
     }
+    // Ultra: Reset der Fable-Quote in Minuten ("fr", wie "wr") und Zahl der
+    // verfuegbaren Fable-Resets ("fc"). Beides optional; -1 / 0 = unbekannt,
+    // die UI zeigt dann "---" bzw. haengt nichts an.
+    out->scoped_reset_mins = doc["fr"] | -1;
+    out->scoped_resets = doc["fc"] | 0;
 
     // Session fields are optional — the daemon only sends them when it has been
     // pointed at a sessions server. "sw" absent means unknown, which the UI

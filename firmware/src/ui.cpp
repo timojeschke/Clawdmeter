@@ -456,23 +456,6 @@ static void format_reset_time(int mins, char* buf, size_t len) {
     }
 }
 
-// Cents as "37" or "37,50" (whole units when there is no remainder).
-static void format_money(int cents, char* buf, size_t len) {
-    if (cents % 100 == 0) snprintf(buf, len, "%d", cents / 100);
-    else                  snprintf(buf, len, "%d,%02d", cents / 100, cents % 100);
-}
-
-// Ultra "Monat" subtitle: "37 von 100 EUR" plus " · aus" when extra usage is
-// off. The euro sign is not in the bundled fonts, so the ISO code is shown.
-static void format_extra_subtitle(const UsageData* d, char* buf, size_t len) {
-    if (!d->extra_valid) { snprintf(buf, len, "---"); return; }
-    char used[16], limit[16];
-    format_money(d->extra_used, used, sizeof(used));
-    format_money(d->extra_limit, limit, sizeof(limit));
-    snprintf(buf, len, "%s von %s %s%s", used, limit, d->extra_cur,
-             d->extra_enabled ? "" : " \xC2\xB7 aus");
-}
-
 // Forward decls — callbacks defined near ui_show_screen below
 static void global_click_cb(lv_event_t* e);
 
@@ -1164,10 +1147,12 @@ void ui_init(void) {
 // Fable-Ring statt "No data" — die Zeile hing nur an der letzten Nutzlast,
 // nicht daran, ob die Daten noch frisch sind.
 static bool scoped_vorhanden = false;
+// Ultra zeigt Fable als eigenes Panel 2; die Ring-Zeile unten waere doppelt.
+static bool aktuell_weekly_only = false;
 
 static void fable_zeile_zeigen(void) {
     if (!lbl_scoped) return;
-    const bool zeigen = scoped_vorhanden && view_state == 2;
+    const bool zeigen = scoped_vorhanden && !aktuell_weekly_only && view_state == 2;
     if (!zeigen) {
         lv_obj_add_flag(lbl_scoped, LV_OBJ_FLAG_HIDDEN);
         if (scoped_ring) lv_obj_add_flag(scoped_ring, LV_OBJ_FLAG_HIDDEN);
@@ -1194,6 +1179,7 @@ void ui_update(const UsageData* data) {
     // A real number beats a decorative status line: when the account has a
     // per-model weekly quota, it takes that slot instead.
     scoped_vorhanden = data->scoped_valid;
+    aktuell_weekly_only = data->weekly_only;
     if (lbl_scoped && data->scoped_valid) {
         lv_label_set_text_fmt(lbl_scoped, "%s  %d%%", data->scoped_name, data->scoped_pct);
         if (scoped_ring) {
@@ -1295,17 +1281,22 @@ void ui_update(const UsageData* data) {
                  pace_hex, pace_text, data->reset_date);
         lv_label_set_text(lbl_weekly_reset, buf);
     } else if (data->weekly_only) {
-        // Ultra: panel 2 is the monthly extra-usage budget
-        lv_label_set_text(lbl_weekly_label, "Monat");
-        if (data->extra_valid) {
-            lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", data->extra_pct);
-            lv_bar_set_value(bar_weekly, data->extra_pct, LV_ANIM_ON);
-            lv_obj_set_style_bg_color(bar_weekly, pct_color((float)data->extra_pct), LV_PART_INDICATOR);
+        // Ultra: panel 2 is the Fable quota, reset line plus optional reset count ("2 Resets")
+        lv_label_set_text(lbl_weekly_label, "Fable");
+        if (data->scoped_valid) {
+            lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", data->scoped_pct);
+            lv_bar_set_value(bar_weekly, data->scoped_pct, LV_ANIM_ON);
+            lv_obj_set_style_bg_color(bar_weekly, pct_color((float)data->scoped_pct), LV_PART_INDICATOR);
         } else {
             lv_label_set_text(lbl_weekly_pct, "---");
             lv_bar_set_value(bar_weekly, 0, LV_ANIM_ON);
         }
-        format_extra_subtitle(data, buf, sizeof(buf));
+        format_reset_time(data->scoped_reset_mins, buf, sizeof(buf));
+        if (data->scoped_resets >= 1) {
+            // Das "·" (U+00B7) steckt in den Styrene-Schriften.
+            const size_t n = strlen(buf);
+            snprintf(buf + n, sizeof(buf) - n, "  \xC2\xB7  %d Resets", data->scoped_resets);
+        }
         lv_label_set_text(lbl_weekly_reset, buf);
     } else {
         int w_pct = (int)(data->weekly_pct + 0.5f);
