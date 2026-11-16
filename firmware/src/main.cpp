@@ -260,62 +260,33 @@ static void check_serial_cmd() {
 // reset line). Called exactly once at the start of setup().
 extern "C" void board_init(void);
 
-// ---- Side buttons: tap turns a page, hold sends the HID key ----
-// Putting two actions on one button costs BTN_HOLD_MS of latency before Space
-// starts. Push-to-talk is a hold gesture anyway, so the delay lands where it
-// is least noticed; a page turn fires on release and feels instant.
-#define BTN_HOLD_MS 250
-
+// ---- Side buttons: every press turns a page, nothing goes to the host ----
+// Upstream held Space (left, voice push-to-talk) and Shift+Tab (right, mode
+// toggle) over BLE HID. Timo, 2026-11-16: "die Knöpfe sind zum Navigieren" —
+// dictation is unused, and a stray key landed in whatever window had focus.
+// The page turn fires on release, however long the button was held.
 struct SideButton {
     InputButton  id;
-    uint8_t      hid_key;
-    uint8_t      hid_mod;
     void       (*on_tap)(void);
     bool         was;
-    bool         hid_active;
     bool         wake_swallowed;
-    uint32_t     down_ms;
 };
 
 // on_tap for the primary button is assigned in setup(): boards with only one
 // side button step forward, so a single button still reaches every page.
-// hid_key 0 = no hold action. The primary button used to hold Space (Claude
-// Code push-to-talk); Timo does not use dictation, and a stray Space landed
-// in the prompt (2026-11-16). Every press of it is now a page turn.
-static SideButton btn_primary   = { INPUT_BTN_PRIMARY,   0x00, 0x00, nullptr,        false, false, false, 0 };
-static SideButton btn_secondary = { INPUT_BTN_SECONDARY, 0x2B, 0x02, ui_next_screen, false, false, false, 0 };
-
-// ble_keyboard_release() clears the whole HID report, so releasing one button
-// while the other is still held has to re-assert that one instead of going
-// silent. Only one key is carried at a time — holding both is not a gesture
-// this device offers.
-static void hid_refresh(void) {
-    if (btn_secondary.hid_active)    ble_keyboard_press(btn_secondary.hid_key, btn_secondary.hid_mod);
-    else if (btn_primary.hid_active) ble_keyboard_press(btn_primary.hid_key, btn_primary.hid_mod);
-    else                             ble_keyboard_release();
-}
+static SideButton btn_primary   = { INPUT_BTN_PRIMARY,   nullptr,        false, false };
+static SideButton btn_secondary = { INPUT_BTN_SECONDARY, ui_next_screen, false, false };
 
 static void side_button_tick(SideButton& b) {
-    const bool     now_held = input_hal_is_held(b.id);
-    const uint32_t now      = millis();
+    const bool now_held = input_hal_is_held(b.id);
 
     if (now_held && !b.was) {
         // Press edge. A press that wakes the panel is swallowed whole — no
-        // page turn, no keystroke — so waking never surprises the user.
-        b.down_ms = now;
+        // page turn — so waking never surprises the user.
         b.wake_swallowed = idle_consume_wake_press();
     } else if (!now_held && b.was) {
-        if (b.hid_active) {
-            b.hid_active = false;
-            hid_refresh();
-        } else if (!b.wake_swallowed && b.on_tap) {
-            b.on_tap();
-        }
+        if (!b.wake_swallowed && b.on_tap) b.on_tap();
         b.wake_swallowed = false;
-    } else if (now_held && b.hid_key && !b.hid_active && !b.wake_swallowed &&
-               now - b.down_ms >= BTN_HOLD_MS) {
-        b.hid_active = true;
-        ble_keyboard_press(b.hid_key, b.hid_mod);
     }
     b.was = now_held;
 }

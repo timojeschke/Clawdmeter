@@ -5,9 +5,8 @@
 A small ESP32 dashboard I made for my desk to keep an eye on Claude Code usage.
 
 It runs on a [Waveshare ESP32-S3-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-s3-touch-amoled-2.16.htm?&aff_id=149786) as well as a few other alternative boards and pairs over Bluetooth, the splash screen plays pixel-art Clawd animations that get
-busier when your usage rate climbs. The two side buttons turn pages on a tap;
-the right one sends Shift+Tab over BLE HID when held, for Claude Code's
-mode-toggle shortcut.
+busier when your usage rate climbs. The two side buttons turn pages; in this
+fork they send nothing to the host.
 
 <img width="1179" height="994" alt="Usage meter" src="https://github.com/user-attachments/assets/83e54aea-0932-428f-94aa-b3ede3a360aa" />
 
@@ -202,27 +201,24 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
 4. The daemon connects to the ESP32 over BLE and writes a JSON payload to the GATT RX characteristic.
 5. The firmware parses it and updates the LVGL dashboard.
 6. The firmware also tracks the rate of change of session % over a 5-minute window and picks splash animations from the matching mood group.
-7. The HID side of the side buttons is independent of all of this — Space and Shift+Tab go straight to the paired host as keyboard input.
 
 ## Physical buttons
 
-A side button with a HID key carries two actions: **tap to turn a page, hold to send its HID key.** The threshold is 250 ms. The left button has no HID key in this fork (2026-11-16: dictation unused, a stray Space landed in the prompt), so every press of it is a page turn.
+Upstream sent Space (left) and Shift+Tab (right) over BLE HID when held. This fork dropped both (2026-11-16: the buttons are for navigating the device, and a stray key landed in whatever window had focus). **Every press turns a page**, fired on release, however long it is held.
 
 | Button           | Tap                        | Hold                                              |
 | ---------------- | -------------------------- | ------------------------------------------------- |
-| **Left**         | Previous page              | — (no hold action; this fork dropped Space/PTT)   |
-| **Right**        | Next page                  | Shift+Tab (Claude Code mode toggle)               |
+| **Left**         | Previous page              | Previous page (on release)                        |
+| **Right**        | Next page                  | Next page (on release)                            |
 | **Middle** (PWR) | Sleep now                  | ~3 s + release: pairing mode · 8 s: power off     |
 
-Shift+Tab goes out as a standard BLE HID keyboard reports, so it triggers in whatever window has focus on the paired host — not just Claude Code. **It only works while the device is connected**; with no bond, the side buttons still turn pages but send nothing.
-
-The first press after the panel has gone dark is swallowed as a wake — no page turn, no keystroke.
+The first press after the panel has gone dark is swallowed as a wake — no page turn.
 
 ### Not every board has three buttons
 
 The table above describes the AMOLED-2.16. The other ports differ, and shared code adapts via `BoardCaps::button_count`:
 
-| Board                        | Side buttons        | Shift+Tab? |
+| Board                        | Side buttons        | Back button? |
 | ---------------------------- | ------------------- | ---------- |
 | AMOLED-2.16 (S3)             | 2 (GPIO 0 / 18)     | yes        |
 | AMOLED-2.16 (C6)             | 2 (GPIO 9 / 10)     | yes        |
