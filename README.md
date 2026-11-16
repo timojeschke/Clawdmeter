@@ -5,9 +5,9 @@
 A small ESP32 dashboard I made for my desk to keep an eye on Claude Code usage.
 
 It runs on a [Waveshare ESP32-S3-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-s3-touch-amoled-2.16.htm?&aff_id=149786) as well as a few other alternative boards and pairs over Bluetooth, the splash screen plays pixel-art Clawd animations that get
-busier when your usage rate climbs. The two side buttons turn pages on a tap
-and send Space or Shift+Tab over BLE HID when held, for Claude Code's voice
-mode and mode-toggle shortcuts.
+busier when your usage rate climbs. The two side buttons turn pages on a tap;
+the right one sends Shift+Tab over BLE HID when held, for Claude Code's
+mode-toggle shortcut.
 
 <img width="1179" height="994" alt="Usage meter" src="https://github.com/user-attachments/assets/83e54aea-0932-428f-94aa-b3ede3a360aa" />
 
@@ -206,15 +206,15 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
 
 ## Physical buttons
 
-Each side button carries two actions: **tap to turn a page, hold to send its HID key.** The threshold is 250 ms, which is also how long Space is delayed — the price of one button doing two jobs. Push-to-talk is a hold gesture anyway, so that is where the delay hurts least.
+A side button with a HID key carries two actions: **tap to turn a page, hold to send its HID key.** The threshold is 250 ms. The left button has no HID key in this fork (2026-11-16: dictation unused, a stray Space landed in the prompt), so every press of it is a page turn.
 
 | Button           | Tap                        | Hold                                              |
 | ---------------- | -------------------------- | ------------------------------------------------- |
-| **Left**         | Previous page              | Space (Claude Code voice-mode push-to-talk)       |
+| **Left**         | Previous page              | — (no hold action; this fork dropped Space/PTT)   |
 | **Right**        | Next page                  | Shift+Tab (Claude Code mode toggle)               |
 | **Middle** (PWR) | Sleep now                  | ~3 s + release: pairing mode · 8 s: power off     |
 
-Space and Shift+Tab go out as standard BLE HID keyboard reports, so they trigger in whatever window has focus on the paired host — not just Claude Code. **They only work while the device is connected**; with no bond, the side buttons still turn pages but send nothing.
+Shift+Tab goes out as a standard BLE HID keyboard reports, so it triggers in whatever window has focus on the paired host — not just Claude Code. **It only works while the device is connected**; with no bond, the side buttons still turn pages but send nothing.
 
 The first press after the panel has gone dark is swallowed as a wake — no page turn, no keystroke.
 

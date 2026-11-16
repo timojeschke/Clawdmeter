@@ -279,7 +279,10 @@ struct SideButton {
 
 // on_tap for the primary button is assigned in setup(): boards with only one
 // side button step forward, so a single button still reaches every page.
-static SideButton btn_primary   = { INPUT_BTN_PRIMARY,   0x2C, 0x00, nullptr,        false, false, false, 0 };
+// hid_key 0 = no hold action. The primary button used to hold Space (Claude
+// Code push-to-talk); Timo does not use dictation, and a stray Space landed
+// in the prompt (2026-11-16). Every press of it is now a page turn.
+static SideButton btn_primary   = { INPUT_BTN_PRIMARY,   0x00, 0x00, nullptr,        false, false, false, 0 };
 static SideButton btn_secondary = { INPUT_BTN_SECONDARY, 0x2B, 0x02, ui_next_screen, false, false, false, 0 };
 
 // ble_keyboard_release() clears the whole HID report, so releasing one button
@@ -309,7 +312,7 @@ static void side_button_tick(SideButton& b) {
             b.on_tap();
         }
         b.wake_swallowed = false;
-    } else if (now_held && !b.hid_active && !b.wake_swallowed &&
+    } else if (now_held && b.hid_key && !b.hid_active && !b.wake_swallowed &&
                now - b.down_ms >= BTN_HOLD_MS) {
         b.hid_active = true;
         ble_keyboard_press(b.hid_key, b.hid_mod);

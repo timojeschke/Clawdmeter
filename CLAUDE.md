@@ -72,6 +72,8 @@ ESP32-C6 sibling of the S3 1.8: same 368×448 SH8601 panel + FocalTech touch, di
 - No PMU / IMU. Buttons: GPIO 0 only (BOOT → tap: next page, hold: Space/PTT). KEY/PWR is EN/RST (hardware reset). GPIO 18 is display R3.
 - RGB tearing fix: pass `bounce_buffer_size_px = LCD_WIDTH * 10` to `Arduino_ESP32RGBPanel`. Do not call `rgbpanel->getFrameBuffer()` after `gfx->begin()`.
 
+**Fork change (2026-11-16):** the primary/left/BOOT button has no hold action any more (`btn_primary.hid_key = 0` in `main.cpp`); every press is a page turn. Board notes below that say "hold: Space/voice-mode" describe upstream.
+
 ## Architecture
 
 ```text
