@@ -87,7 +87,7 @@ Then repeat the `Activate.ps1` step.
 pip install -r daemon\requirements-windows.txt
 ```
 
-This installs `bleak` (WinRT BLE) and `httpx` (async HTTP for the Anthropic API).
+This installs `bleak` (WinRT BLE), `pyserial` (USB cable) and `httpx` (async HTTP for the Anthropic API).
 
 ---
 
@@ -99,10 +99,22 @@ With the venv active and the Clawdmeter powered on:
 python daemon\claude_usage_daemon_windows.py
 ```
 
+### USB cable (preferred) and BLE fallback
+
+With the Clawdmeter plugged in by USB, the daemon sends each payload as one JSON
+line over the serial port. It finds the device by the Espressif USB vendor ID
+`0x303A`. Set `CLAWDMETER_SERIAL_PORT` (for example `COM3`) to force a port.
+The daemon opens the port with DTR and RTS off, so the device does not reset.
+
+If no port is found, or opening or writing fails, the daemon falls back to BLE
+and tries the cable again after 60 seconds. While on BLE it checks every 5
+seconds whether the cable is back and switches over. The firmware must be the
+build that reads `{`-lines on serial.
+
 ### Expected console output
 
 ```
-[HH:MM:SS] === Claude Usage Tracker Daemon (BLE, Windows) ===
+[HH:MM:SS] === Claude Usage Tracker Daemon (USB seriell + BLE, Windows) ===
 [HH:MM:SS] Poll interval: 60s
 [HH:MM:SS] Scanning for 'Clawdmeter' (8.0s)...
 [HH:MM:SS] Not advertising; connecting to bonded address XX:XX:XX:XX:XX:XX
@@ -217,7 +229,7 @@ powershell -ExecutionPolicy Bypass -File install-windows.ps1
 The script does four things in order and logs progress at each step:
 
 1. Creates a Python virtual environment at `.venv`.
-2. Installs dependencies from `daemon\requirements-windows.txt` (bleak, httpx, pystray, Pillow).
+2. Installs dependencies from `daemon\requirements-windows.txt` (bleak, pyserial, httpx, pystray, Pillow).
 3. Registers the tray app to launch automatically at login via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` — per-user, no admin required.
 4. Launches the tray app immediately (headless — no console window).
 
