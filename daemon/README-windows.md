@@ -106,10 +106,11 @@ line over the serial port. It finds the device by the Espressif USB vendor ID
 `0x303A`. Set `CLAWDMETER_SERIAL_PORT` (for example `COM3`) to force a port.
 The daemon opens the port with DTR and RTS off, so the device does not reset.
 
-If no port is found, or opening or writing fails, the daemon falls back to BLE
-and tries the cable again after 60 seconds. While on BLE it checks every 5
-seconds whether the cable is back and switches over. The firmware must be the
-build that reads `{`-lines on serial.
+The firmware answers each line with `{"ack":true}`. If no port is found, opening
+or writing fails, or the device does not acknowledge (old firmware), the daemon
+falls back to BLE and tries the cable again after 60, then 120, then 300 seconds.
+While on BLE it checks every 30 seconds whether the cable is back and the port
+opens, and only then switches over.
 
 ### Expected console output
 

@@ -117,17 +117,17 @@ def test_zu_lange_nutzlast_nimmt_kleinere_fassung():
     ser.write.assert_called_once_with(json.dumps(klein, separators=(",", ":")).encode() + b"\n")
 
 
-def test_leseschleife_verwirft_eingang_und_erkennt_fehler(monkeypatch):
+def test_leseschleife_zaehlt_acks_und_verwirft_den_rest(monkeypatch):
     monkeypatch.setattr(mod, "SERIAL_LESEN_S", 0.001)
     ser = MagicMock()
-    ser.in_waiting = 12
+    ser.in_waiting = 40
+    ser.read.return_value = b'init: touch\n{"ack":true}\n{"ack":fal'
     session = mod.SerialSession(ser)
 
     async def lauf():
-        aufgabe = asyncio.ensure_future(session.eingang_verwerfen())
-        await asyncio.sleep(0.02)
-        assert session.ist_offen()
-        ser.read.assert_called_with(12)
+        aufgabe = asyncio.ensure_future(session.eingang_lesen())
+        await asyncio.sleep(0.01)
+        assert session.quittiert >= 1
         type(ser).in_waiting = property(lambda self: (_ for _ in ()).throw(OSError("weg")))
         await asyncio.wait_for(aufgabe, 1)
 
@@ -135,24 +135,199 @@ def test_leseschleife_verwirft_eingang_und_erkennt_fehler(monkeypatch):
     assert session.ist_offen() is False
 
 
+def test_halbe_ack_zeile_wird_erst_mit_zeilenende_gezaehlt():
+    session = mod.SerialSession(MagicMock())
+    session._quittungen_auswerten(b'{"ack":tr')
+    assert session.quittiert == 0
+    session._quittungen_auswerten(b'ue}\r\n')
+    assert session.quittiert == 1
+
+
 def test_oeffnen_fehlgeschlagen_gibt_false(monkeypatch):
     def kaputt(port):
         raise pyserial.SerialException("Zugriff verweigert")
     monkeypatch.setattr(mod, "oeffne_serial", kaputt)
-    stop = asyncio.run(_ereignis())
-    assert asyncio.run(mod.serial_run("COM3", stop)) is False
+    assert asyncio.run(mod.serial_run("COM3", asyncio.Event())) is False
 
 
-async def _ereignis():
-    return asyncio.Event()
+class _Geraet:
+    """Fake-Port: quittiert jede Nutzlastzeile je nach Modus."""
+    def __init__(self, antwort):
+        self.antwort = antwort      # b'{"ack":true}\n', b'{"ack":false}\n' oder b''
+        self.geschrieben = []
+        self.puffer = b""
+        self.close = MagicMock()
+
+    def write(self, daten):
+        self.geschrieben.append(daten)
+        if daten.startswith(b"{"):
+            self.puffer += self.antwort
+
+    @property
+    def in_waiting(self):
+        return len(self.puffer)
+
+    def read(self, n):
+        daten, self.puffer = self.puffer[:n], self.puffer[n:]
+        return daten
+
+
+def _serial_run_mit(monkeypatch, geraet, frist=0.0):
+    monkeypatch.setattr(mod, "oeffne_serial", lambda port: geraet)
+    monkeypatch.setattr(mod, "read_token", lambda: None)
+    monkeypatch.setattr(mod, "uhr_felder", lambda: {})
+    monkeypatch.setattr(mod, "SESSIONS_PUSH_INTERVAL", 0)
+    monkeypatch.setattr(mod, "HERZSCHLAG_S", 0)
+    monkeypatch.setattr(mod, "TICK", 0.01)
+    monkeypatch.setattr(mod, "SERIAL_LESEN_S", 0.001)
+    monkeypatch.setattr(mod, "SERIAL_ACK_FRIST_S", frist)
+
+    async def ohne_sessions(payload):
+        return payload, payload
+
+    monkeypatch.setattr(mod, "add_session_fields_paar", ohne_sessions)
+
+    async def lauf():
+        stop = asyncio.Event()
+        ergebnis = asyncio.ensure_future(mod.serial_run("COM3", stop))
+        await asyncio.sleep(0.3)
+        if not ergebnis.done():
+            stop.set()
+        return await asyncio.wait_for(ergebnis, 5)
+
+    return asyncio.run(lauf())
+
+
+def test_sendet_zuerst_leerzeile_dann_nutzlast_und_quittung_haelt_kabel(monkeypatch):
+    geraet = _Geraet(b'{"ack":true}\n')
+    assert _serial_run_mit(monkeypatch, geraet) is True
+    assert geraet.geschrieben[0] == b"\n"
+    assert geraet.geschrieben[1] == b'{"ok":false}\n'
+    assert len(geraet.geschrieben) > 3      # lief weiter, wurde nicht abgebrochen
+    geraet.close.assert_called_once()
+
+
+def test_keine_quittung_gilt_kabel_als_ausgefallen(monkeypatch, capsys):
+    geraet = _Geraet(b"")                   # alte Firmware schweigt
+    assert _serial_run_mit(monkeypatch, geraet) is False
+    nutzlasten = [z for z in geraet.geschrieben if z.startswith(b"{")]
+    assert len(nutzlasten) == mod.SERIAL_OHNE_ACK_MAX
+    assert "Kabel: keine Quittung vom Gerät (alte Firmware?)" in capsys.readouterr().out
+    geraet.close.assert_called_once()
+
+
+def test_zweimal_ack_false_gilt_kabel_als_ausgefallen(monkeypatch, capsys):
+    geraet = _Geraet(b'{"ack":false}\n')
+    assert _serial_run_mit(monkeypatch, geraet) is False
+    assert "ack:false" in capsys.readouterr().out
+    nutzlasten = [z for z in geraet.geschrieben if z.startswith(b"{")]
+    assert len(nutzlasten) == mod.SERIAL_NACK_MAX
+
+
+def test_schreibfehler_beendet_lauf_ohne_quittung(monkeypatch):
+    geraet = _Geraet(b'{"ack":true}\n')
+    echtes_write = geraet.write
+    anzahl = []
+
+    def write(daten):
+        anzahl.append(daten)
+        if len(anzahl) > 2:
+            raise pyserial.SerialException("Kabel gezogen")
+        echtes_write(daten)
+
+    geraet.write = write
+    assert _serial_run_mit(monkeypatch, geraet) is True   # eine Quittung kam
+    geraet.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# main(): Kabel zuerst, Rueckfall auf BLE, spaeter wieder Kabel
+# Sperrzeiten und Wechsel von BLE zum Kabel
+# ---------------------------------------------------------------------------
+
+def test_sperrzeit_waechst_60_120_300_und_geht_nur_nach_quittiertem_lauf_zurueck(monkeypatch):
+    jetzt = [1000.0]
+    monkeypatch.setattr(mod.time, "monotonic", lambda: jetzt[0])
+    wahl = mod.KabelWahl()
+    abstaende = []
+    for _ in range(4):
+        wahl.fehlschlag(quittiert=False)
+        abstaende.append(wahl.gesperrt_bis - jetzt[0])
+    assert abstaende == [60, 120, 300, 300]
+    wahl.fehlschlag(quittiert=True)         # Lauf mit Quittung, dann ausgefallen
+    assert wahl.gesperrt_bis - jetzt[0] == 60
+    assert wahl.fehler_in_folge == 1
+
+
+def test_gesperrt_liefert_keinen_port(monkeypatch):
+    monkeypatch.delenv("CLAWDMETER_SERIAL_PORT", raising=False)
+    monkeypatch.setattr(mod.list_ports, "comports", lambda: [_port("COM7", 0x303A)])
+    wahl = mod.KabelWahl()
+    assert asyncio.run(wahl.naechster_port()) == "COM7"
+    wahl.fehlschlag(quittiert=False)
+    assert asyncio.run(wahl.naechster_port()) is None
+
+
+def test_port_da_aber_oeffnen_scheitert_trennt_ble_nicht_und_sperrt_laenger(monkeypatch):
+    monkeypatch.delenv("CLAWDMETER_SERIAL_PORT", raising=False)
+    monkeypatch.setattr(mod.list_ports, "comports", lambda: [_port("COM7", 0x303A)])
+    jetzt = [1000.0]
+    monkeypatch.setattr(mod.time, "monotonic", lambda: jetzt[0])
+
+    versuche = []
+
+    class Kaputt:
+        def __setattr__(self, name, wert):
+            object.__setattr__(self, name, wert)
+
+        def open(self):
+            versuche.append(1)
+            raise pyserial.SerialException("Zugriff verweigert")
+
+    monkeypatch.setattr(mod.serial, "Serial", lambda *a, **k: Kaputt())
+    wahl = mod.KabelWahl()
+    sperren = []
+    for _ in range(3):
+        jetzt[0] += 400                     # Sperre und Pruefabstand abgelaufen
+        assert asyncio.run(wahl.wieder_da()) is False   # BLE-Schleife laeuft weiter
+        sperren.append(wahl.gesperrt_bis - jetzt[0])
+    assert len(versuche) == 3
+    assert sperren == [60, 120, 300]
+
+
+def test_wieder_da_prueft_nur_alle_30_s(monkeypatch):
+    monkeypatch.delenv("CLAWDMETER_SERIAL_PORT", raising=False)
+    suche = MagicMock(return_value=[])
+    monkeypatch.setattr(mod.list_ports, "comports", suche)
+    jetzt = [1000.0]
+    monkeypatch.setattr(mod.time, "monotonic", lambda: jetzt[0])
+    wahl = mod.KabelWahl()
+    asyncio.run(wahl.wieder_da())
+    jetzt[0] += 10
+    asyncio.run(wahl.wieder_da())
+    assert suche.call_count == 1
+    jetzt[0] += 25
+    asyncio.run(wahl.wieder_da())
+    assert suche.call_count == 2
+
+
+def test_wieder_da_meldet_true_wenn_port_sich_oeffnen_laesst(monkeypatch):
+    monkeypatch.delenv("CLAWDMETER_SERIAL_PORT", raising=False)
+    monkeypatch.setattr(mod.list_ports, "comports", lambda: [_port("COM7", 0x303A)])
+    fake = _FakeSerial()
+    fake.close = MagicMock()
+    monkeypatch.setattr(mod.serial, "Serial", lambda *a, **k: fake)
+    wahl = mod.KabelWahl()
+    assert asyncio.run(wahl.wieder_da()) is True
+    fake.close.assert_called_once()
+    assert ("dtr", False) in fake.ereignisse     # Pruefung ohne Reset
+
+
+# ---------------------------------------------------------------------------
+# main(): Kabel zuerst, Rueckfall auf BLE
 # ---------------------------------------------------------------------------
 
 def _main_mit_fakes(monkeypatch, ports, serial_ergebnis):
-    """Faehrt main() bis zum zweiten BLE-Versuch. Gibt (serial_ports, ble_aufrufe)."""
+    """Faehrt main() bis zum ersten BLE-Lauf. Gibt (serial_ports, ble_aufrufe)."""
     ble = []
     seriell = []
     ports = iter(ports)
@@ -187,41 +362,3 @@ def test_main_mit_port_faellt_nach_ausfall_auf_ble_zurueck(monkeypatch):
     seriell, ble = _main_mit_fakes(monkeypatch, ["COM7"], False)
     assert seriell == ["COM7"]
     assert len(ble) == 1
-
-
-def test_ble_schleife_wechselt_zum_kabel_erst_nach_sperrzeit(monkeypatch):
-    seriell, ble = _main_mit_fakes(monkeypatch, ["COM7", "COM7"], False)
-    abbruch = ble[0]
-    # Frisch nach dem Kabelfehler: keine Rueckkehr, auch wenn der Port da ist.
-    assert abbruch() is False
-    # Nach der Sperrzeit und dem Pruefabstand: Kabel wieder da.
-    echte_zeit = mod.time.monotonic
-    monkeypatch.setattr(mod.time, "monotonic",
-                        lambda: echte_zeit() + mod.SERIAL_NEUVERSUCH_S + 1)
-    assert abbruch() is True
-
-
-def test_serial_run_sendet_nutzlast_zeile_und_faellt_bei_schreibfehler_aus(monkeypatch):
-    ser = MagicMock()
-    ser.in_waiting = 0
-    ser.write.side_effect = [None, pyserial.SerialException("Kabel gezogen")]
-    monkeypatch.setattr(mod, "oeffne_serial", lambda port: ser)
-    monkeypatch.setattr(mod, "read_token", lambda: None)
-    monkeypatch.setattr(mod, "uhr_felder", lambda: {})
-    monkeypatch.setattr(mod, "SESSIONS_PUSH_INTERVAL", 0)
-    monkeypatch.setattr(mod, "TICK", 0.01)
-
-    async def ohne_sessions(payload):
-        return payload, payload
-
-    monkeypatch.setattr(mod, "add_session_fields_paar", ohne_sessions)
-
-    async def lauf():
-        return await asyncio.wait_for(mod.serial_run("COM3", asyncio.Event()), 5)
-
-    # Erster Schreibvorgang gelingt (Zeile mit Zeilenende), der zweite scheitert:
-    # die Schleife endet, der Port wird geschlossen.
-    monkeypatch.setattr(mod, "HERZSCHLAG_S", 0)
-    assert asyncio.run(lauf()) is True
-    assert ser.write.call_args_list[0].args[0] == b'{"ok":false}\n'
-    ser.close.assert_called_once()

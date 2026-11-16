@@ -237,6 +237,9 @@ static bool cmd_overflow = false;
 // innerhalb dieses Fensters ankommen (Herzschlag des Daemons: 60 s, wie
 // DATA_FRESH_MS in ui.cpp).
 #define SERIAL_LINK_MS 90000
+// Empfangspuffer des USB-Treibers, unabhaengig von der Zeilenlaenge: Er muss
+// mehrere Nutzlasten fassen, falls loop() beim Zeichnen kurz nicht liest.
+#define SERIAL_RX_BUF_SIZE 2048
 static uint32_t serial_last_ms = 0;
 static bool     serial_seen    = false;
 
@@ -302,15 +305,20 @@ static void check_serial_cmd() {
         if (c == '\n' || c == '\r') {
             if (cmd_overflow) {
                 Serial.println("serial: Zeile zu lang, verworfen");
+                if (cmd_buf[0] == '{') Serial.println("{\"ack\":false}");
             } else {
                 cmd_buf[cmd_pos] = '\0';
                 if (cmd_buf[0] == '{') {
-                    // Nutzlast ueber Kabel. Keine Quittung: Der Daemon liest die
-                    // Ausgabe nur und verwirft sie, und ein Parse-Fehler steht
-                    // schon im Log ("JSON parse error").
+                    // Nutzlast ueber Kabel. Die Quittung ist eine Zeile wie bei
+                    // BLE: Der Daemon erkennt daran, dass die Firmware die
+                    // Zeilen versteht (eine alte Firmware schweigt) und faellt
+                    // sonst auf BLE zurueck.
                     if (apply_payload(cmd_buf)) {
                         serial_last_ms = millis();
                         serial_seen = true;
+                        Serial.println("{\"ack\":true}");
+                    } else {
+                        Serial.println("{\"ack\":false}");
                     }
                 }
                 else if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
@@ -393,7 +401,7 @@ static void side_button_tick(SideButton& b) {
 void setup() {
     // Der Standard-Empfangspuffer (256 Byte) laeuft ueber, wenn eine Nutzlast
     // ankommt, waehrend loop() gerade zeichnet. Vor begin() setzen.
-    Serial.setRxBufferSize(CMD_BUF_SIZE);
+    Serial.setRxBufferSize(SERIAL_RX_BUF_SIZE);
     Serial.begin(115200);
     delay(300);
     Serial.println("{\"ready\":true}");

@@ -111,8 +111,11 @@ RECONNECT_BACKOFF_CAP = 8  # D-05: fast-reconnect cap (seconds); keeps stacked r
 SERIAL_VID = 0x303A
 SERIAL_BAUD = 115200            # ohne Bedeutung fuer USB-CDC, pyserial verlangt einen Wert
 SERIAL_MAX_ZEILE = 1000
-SERIAL_NEUVERSUCH_S = 60        # nach einem Fehler so lange BLE, dann wieder Kabel
-SERIAL_PRUEFUNG_S = 5           # so oft schaut die BLE-Schleife nach dem Kabel
+SERIAL_SPERREN_S = (60, 120, 300)  # BLE-Zeit nach dem 1., 2., 3.+ Kabelfehler in Folge
+SERIAL_PRUEFUNG_S = 30          # so oft schaut die BLE-Schleife nach dem Kabel
+SERIAL_ACK_FRIST_S = 1.0        # so lange darf die Quittung der letzten Nutzlast dauern
+SERIAL_OHNE_ACK_MAX = 2         # so viele Nutzlasten ohne Quittung, dann gilt das Kabel als aus
+SERIAL_NACK_MAX = 2             # so viele ack:false in Folge, dann ebenso
 SERIAL_LESEN_S = 0.2            # Takt, in dem Eingang des Geraets verworfen wird
 
 CONFIG_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Clawdmeter" / "config"
@@ -768,26 +771,66 @@ def oeffne_serial(port: str):
 
 
 class SerialSession:
-    """Gleiche Schnittstelle wie Session, aber eine JSON-Zeile je Nutzlast."""
+    """Gleiche Schnittstelle wie Session, aber eine JSON-Zeile je Nutzlast.
+
+    Die Firmware quittiert jede Zeile mit `{"ack":true}` oder `{"ack":false}`.
+    Fehlt die Quittung, gilt das Kabel als ausgefallen: Eine alte Firmware
+    liest die Zeilen nicht und schweigt.
+    """
 
     def __init__(self, ser) -> None:
         self.ser = ser
         self.refresh_requested = asyncio.Event()  # das Kabel kennt keinen Wunsch
         self.offen = True
+        self.gesendet = 0           # Nutzlasten, die rausgingen
+        self.quittiert = 0          # davon mit ack:true bestaetigt
+        self.nacks_in_folge = 0
+        self.letzter_versand = 0.0  # time.monotonic()
+        self._eingang = b""
+
+    def _quittungen_auswerten(self, daten: bytes) -> None:
+        """Sucht ack-Zeilen im Eingang; der Rest (Firmware-Log) wird verworfen."""
+        self._eingang = (self._eingang + daten)[-4096:]
+        *zeilen, self._eingang = self._eingang.split(b"\n")
+        for zeile in zeilen:
+            zeile = zeile.strip()
+            if not zeile.startswith(b'{"ack":'):
+                continue
+            if zeile.startswith(b'{"ack":true'):
+                self.quittiert += 1
+                self.nacks_in_folge = 0
+            elif zeile.startswith(b'{"ack":false'):
+                self.nacks_in_folge += 1
+
+    def _quittung_fehlt(self) -> str | None:
+        """Grund, warum das Kabel als ausgefallen gilt, sonst None."""
+        if self.nacks_in_folge >= SERIAL_NACK_MAX:
+            return f"Gerät lehnt Nutzlasten ab ({self.nacks_in_folge}x ack:false)"
+        offen_ack = self.gesendet - self.quittiert
+        if (offen_ack >= SERIAL_OHNE_ACK_MAX
+                and time.monotonic() - self.letzter_versand >= SERIAL_ACK_FRIST_S):
+            return "keine Quittung vom Gerät (alte Firmware?)"
+        return None
 
     def ist_offen(self) -> bool:
+        if self.offen:
+            grund = self._quittung_fehlt()
+            if grund:
+                log(f"Kabel: {grund}")
+                self.offen = False
         return self.offen
 
-    async def eingang_verwerfen(self) -> None:
-        """Liest, was die Firmware ins Log schreibt, und wirft es weg.
+    async def eingang_lesen(self) -> None:
+        """Liest den Eingang des Geraets: ack-Zeilen zaehlen, Rest verwerfen.
 
-        Wuerde es liegen bleiben, liefe der Sendepuffer des Geraets voll.
+        Wuerde das Log der Firmware liegen bleiben, liefe der Sendepuffer des
+        Geraets voll.
         """
         while self.offen:
             try:
                 wartend = self.ser.in_waiting
                 if wartend:
-                    self.ser.read(wartend)
+                    self._quittungen_auswerten(self.ser.read(wartend))
             except (serial.SerialException, OSError) as e:
                 log(f"Serial: Lesen fehlgeschlagen: {e}")
                 self.offen = False
@@ -808,12 +851,15 @@ class SerialSession:
                 continue
             log(f"Sending (seriell): {daten.decode()}")
             try:
-                self.ser.write(daten + b"\n")
-                self.ser.flush()
+                # write_timeout begrenzt die Wartezeit; im Thread, damit der
+                # Event-Loop (Tray, Quit) nicht blockiert.
+                await asyncio.to_thread(self.ser.write, daten + b"\n")
             except (serial.SerialException, OSError) as e:
                 log(f"Serial: Schreiben fehlgeschlagen: {e}")
                 self.offen = False
                 return None
+            self.gesendet += 1
+            self.letzter_versand = time.monotonic()
             return fassung
         return None
 
@@ -828,25 +874,83 @@ class SerialSession:
 async def serial_run(port: str, stop_event: asyncio.Event, tray_state=None) -> bool:
     """Oeffnet den Port und faehrt den Takt, bis er ausfaellt oder gestoppt wird.
 
-    Gibt zurueck, ob mindestens ein Schreibvorgang gelang. Fehler beim Oeffnen
-    geben False zurueck; der Aufrufer faellt dann auf BLE zurueck.
+    Gibt True zurueck, wenn das Geraet mindestens eine Nutzlast quittiert hat.
+    Alles andere (Oeffnen scheitert, keine Quittung, Schreibfehler) ist False;
+    der Aufrufer faellt dann auf BLE zurueck.
     """
     log(f"Serial: oeffne {port}")
     try:
-        ser = oeffne_serial(port)
+        ser = await asyncio.to_thread(oeffne_serial, port)
+        # Ende einer womoeglich halb empfangenen Zeile; die Firmware ignoriert
+        # eine leere Zeile.
+        await asyncio.to_thread(ser.write, b"\n")
     except (serial.SerialException, OSError, ValueError) as e:
         log(f"Serial: Oeffnen von {port} fehlgeschlagen: {e}")
         return False
     session = SerialSession(ser)
-    leser = asyncio.ensure_future(session.eingang_verwerfen())
+    leser = asyncio.ensure_future(session.eingang_lesen())
     log(f"Serial: verbunden mit {port}")
     try:
-        return await takt_schleife(session, session.ist_offen, stop_event, tray_state)
+        await takt_schleife(session, session.ist_offen, stop_event, tray_state)
+        return session.quittiert > 0
     finally:
         session.schliessen()
         leser.cancel()
         await asyncio.gather(leser, return_exceptions=True)
         log("Serial: getrennt" if not stop_event.is_set() else "Stopping")
+
+
+def pruefe_serial_port(port: str) -> bool:
+    """Laesst sich der Port oeffnen? Kurz auf und zu, ohne etwas zu senden."""
+    try:
+        oeffne_serial(port).close()
+    except (serial.SerialException, OSError, ValueError) as e:
+        log(f"Serial: Port {port} nicht zu oeffnen: {e}")
+        return False
+    return True
+
+
+class KabelWahl:
+    """Wann das Kabel versucht wird: Sperrzeiten nach Fehlern, gestuft.
+
+    Ein Fehlschlag sperrt das Kabel 60, 120, dann 300 s. Die Stufe geht erst
+    nach einem Kabellauf mit Quittung zurueck.
+    """
+
+    def __init__(self) -> None:
+        self.fehler_in_folge = 0
+        self.gesperrt_bis = 0.0     # time.monotonic()
+        self.zuletzt_geprueft = 0.0
+
+    def fehlschlag(self, quittiert: bool) -> None:
+        self.fehler_in_folge = 1 if quittiert else self.fehler_in_folge + 1
+        stufe = min(self.fehler_in_folge, len(SERIAL_SPERREN_S)) - 1
+        self.gesperrt_bis = time.monotonic() + SERIAL_SPERREN_S[stufe]
+
+    async def naechster_port(self) -> str | None:
+        """Port des Kabels, wenn ein Versuch erlaubt ist, sonst None."""
+        if time.monotonic() < self.gesperrt_bis:
+            return None
+        return await asyncio.to_thread(finde_serial_port)
+
+    async def wieder_da(self) -> bool:
+        """Fuer die BLE-Schleife: Lohnt sich der Wechsel zum Kabel?
+
+        Nur alle SERIAL_PRUEFUNG_S, und nur wenn sich der Port wirklich oeffnen
+        laesst. Sonst risse der Wechsel die BLE-Verbindung ohne Gegenwert ab.
+        """
+        jetzt = time.monotonic()
+        if jetzt - self.zuletzt_geprueft < SERIAL_PRUEFUNG_S:
+            return False
+        self.zuletzt_geprueft = jetzt
+        port = await self.naechster_port()
+        if port is None:
+            return False
+        if not await asyncio.to_thread(pruefe_serial_port, port):
+            self.fehlschlag(quittiert=False)
+            return False
+        log("Serial: Kabel erkannt, wechsle von BLE auf seriell")
+        return True
 
 
 def _extract_access_token(blob: str) -> str | None:
@@ -1068,7 +1172,7 @@ async def takt_schleife(session, verbunden, stop_event: asyncio.Event,
     """Poll- und Session-Takt auf einem Uebertragungsweg (BLE oder Kabel).
 
     `session` hat `write_payload(payload, kleiner)` und `refresh_requested`.
-    `verbunden()` sagt, ob der Weg noch steht; `abbruch()` (optional) beendet
+    `verbunden()` sagt, ob der Weg noch steht; `abbruch()` (optional, async) beendet
     die Schleife von aussen, etwa wenn ein besserer Weg wieder da ist.
     Gibt zurueck, ob mindestens ein Schreibvorgang gelang.
     """
@@ -1211,7 +1315,7 @@ async def takt_schleife(session, verbunden, stop_event: asyncio.Event,
                 # Herzschlag nie.
                 last_sessions_push = time.time()
 
-        if abbruch is not None and abbruch():
+        if abbruch is not None and await abbruch():
             break
 
         # Wake on a refresh request OR a stop, whichever comes first. Waking
@@ -1357,37 +1461,18 @@ async def main(tray_state=None) -> None:
     # D-05: two distinct backoff regimes — slow-search (device absent) vs fast-reconnect (link dropped)
     search_backoff = 1     # caps at 60s — gentle, for a device that is genuinely absent/off
     reconnect_backoff = 1  # caps at RECONNECT_BACKOFF_CAP — fast, to clear the 120s SLA after a drop
-    serial_fehler = None   # monotonic-Zeitpunkt des letzten Kabelfehlers
-    serial_geprueft = 0.0  # wann die BLE-Schleife zuletzt nach dem Kabel sah
-
-    def serial_moeglich() -> str | None:
-        """Port des Kabels, wenn ein Versuch erlaubt ist (nicht kurz nach Fehler)."""
-        if serial_fehler is not None and time.monotonic() - serial_fehler < SERIAL_NEUVERSUCH_S:
-            return None
-        return finde_serial_port()
-
-    def kabel_wieder_da() -> bool:
-        nonlocal serial_geprueft
-        jetzt = time.monotonic()
-        if jetzt - serial_geprueft < SERIAL_PRUEFUNG_S:
-            return False
-        serial_geprueft = jetzt
-        if serial_moeglich() is None:
-            return False
-        log("Serial: Kabel erkannt, wechsle von BLE auf seriell")
-        return True
-
+    kabel = KabelWahl()
     global _kabel_abbruch
-    _kabel_abbruch = kabel_wieder_da
+    _kabel_abbruch = kabel.wieder_da
     while not stop_event.is_set():
-        # Kabel zuerst. Fehler oder kein Port: weiter mit BLE, nach
-        # SERIAL_NEUVERSUCH_S wieder seriell.
-        port = serial_moeglich()
+        # Kabel zuerst. Fehler oder kein Port: weiter mit BLE, nach der
+        # gestuften Sperrzeit wieder seriell.
+        port = await kabel.naechster_port()
         if port:
-            await serial_run(port, stop_event, tray_state)
+            quittiert = await serial_run(port, stop_event, tray_state)
             if stop_event.is_set():
                 break
-            serial_fehler = time.monotonic()
+            kabel.fehlschlag(quittiert)
             if tray_state:
                 tray_state.set_scanning()
             log("Serial: ausgefallen, Rueckfall auf BLE")
