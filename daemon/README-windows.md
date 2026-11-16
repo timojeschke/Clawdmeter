@@ -180,6 +180,56 @@ session fields are simply left out of that payload.
 
 ---
 
+## Sessions eines zweiten PCs im LAN
+
+Läuft Claude Code auf einem zweiten Windows-PC (hier: Autodarts-PC), zeigt das
+Display dessen Sessions zusätzlich. Dafür läuft dort der Lesedienst
+`sessions_lan_dienst.py`; der Daemon dieses PCs holt die Liste ab. Der Dienst
+braucht nur Python 3.10 oder neuer, keine Zusatzpakete. Kopiere
+`sessions_lan_dienst.py` und `lokale_sessions.py` zusammen in einen Ordner auf
+dem anderen PC.
+
+**Port 8790 ist belegt (fremder Dienst), nie verwenden.** Standard ist 8791.
+
+1. **Dienst starten** (auf dem anderen PC):
+   `pythonw sessions_lan_dienst.py --port 8791`. Beim ersten Start legt er die
+   Tokendatei `%LOCALAPPDATA%\Clawdmeter\lan_sessions_token` an und gibt nur
+   deren Pfad aus. Ohne Konsole schreibt er sein Log nach
+   `lan_sessions_dienst.log` neben die Tokendatei. Ist `python` nicht im Pfad,
+   gilt der volle Pfad zu `pythonw.exe`; mit `-I` gestartet findet der Dienst
+   `lokale_sessions.py` trotzdem im eigenen Ordner.
+2. **Autostart:** Aufgabenplanung, Trigger "Bei Anmeldung", Aktion
+   `<voller Pfad>\pythonw.exe` mit Argumenten
+   `-I <Ordner>\sessions_lan_dienst.py --port 8791`.
+3. **Firewall** (PowerShell als Administrator, auf dem anderen PC). `-Profile
+   Any`, weil dieser PC das Netz als "Öffentlich" führt; die Quelladresse
+   begrenzt die Regel aufs Heimnetz:
+   ```powershell
+   New-NetFirewallRule -DisplayName "Clawdmeter Sessions LAN" -Direction Inbound -Protocol TCP -LocalPort 8791 -RemoteAddress 192.168.2.0/24 -Profile Any -Action Allow
+   ```
+4. **Token übertragen:** den Inhalt der Tokendatei einmalig von Hand in die
+   Konfig dieses PCs eintragen, nie über Chat, Mail oder Logs:
+   ```
+   lan_sessions_url = http://192.168.2.X:8791/sessions
+   lan_sessions_token = <Inhalt der Tokendatei>
+   ```
+   Mehrere PCs: URLs mit Komma trennen, ein gemeinsames Token. Fehlt URL oder
+   Token, ist die Funktion aus.
+
+**Sicherheit:** Das Token geht im Klartext über HTTP durchs Heimnetz. Es
+erlaubt nur das Lesen von Sessionnamen und Zuständen, sonst nichts.
+Empfehlung: Trage im Router für den Dienst-PC eine feste Adresse ein
+(DHCP-Reservierung), damit die URL in der Konfig stimmt und die Firewall-Regel
+auf den richtigen PC zeigt. Bei Verdacht auf ein bekanntes Token: Tokendatei
+löschen, Dienst neu starten und das neue Token von Hand in die Konfig
+übertragen.
+
+Schläft der andere PC oder ist er aus, fehlen seine Sessions einfach: Der
+Abruf bricht nach 2 Sekunden ab und kostet keine Nutzungsdaten. Wie bei den
+eigenen Sessions zeigt das Gerät sie nur zusammen mit einer Serverantwort.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

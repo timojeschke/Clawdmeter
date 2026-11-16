@@ -42,3 +42,15 @@ chime = off
 #   12   = show the clock, forced 12-hour  (e.g. 6:28 PM)
 #   24   = show the clock, forced 24-hour  (e.g. 18:28)
 clock = off
+
+# Sessions eines zweiten PCs im LAN (Windows-Daemon). Auf dem anderen PC läuft
+# sessions_lan_dienst.py; seine Sessions erscheinen zusätzlich zu den Server-
+# und den eigenen Sessions. Beides ist nötig — nur URL oder nur Token heißt aus.
+#   lan_sessions_url   : eine oder mehrere URLs, durch Komma getrennt.
+#   lan_sessions_token : ein Token für alle URLs. Es steht in der Tokendatei des
+#                        Lesedienstes (Standard %LOCALAPPDATA%\Clawdmeter\
+#                        lan_sessions_token auf dem anderen PC) und wird einmal
+#                        von Hand hierher kopiert — nie in Chat, Mail oder Logs.
+# Ist der andere PC aus oder schläft er, fehlen seine Sessions einfach.
+# lan_sessions_url = http://192.168.2.X:8791/sessions
+# lan_sessions_token = <Token aus der Tokendatei des Lesedienstes>

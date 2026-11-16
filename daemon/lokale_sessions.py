@@ -96,9 +96,13 @@ def _alter_sekunden(gestempelt, jetzt: float) -> float | None:
     """
     if isinstance(gestempelt, bool) or not isinstance(gestempelt, (int, float)):
         return None
-    if not math.isfinite(gestempelt):
+    try:
+        if not math.isfinite(gestempelt):
+            return None
+        return jetzt - gestempelt / 1000.0
+    except OverflowError:
+        # Eine Ganzzahl wie 10**400 passt in kein float.
         return None
-    return jetzt - gestempelt / 1000.0
 
 
 def _ist_aktuell(eintrag: dict, jetzt: float) -> bool:

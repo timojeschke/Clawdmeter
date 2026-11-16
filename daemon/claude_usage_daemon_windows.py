@@ -30,6 +30,7 @@ from bleak.exc import BleakError
 
 try:
     from daemon import lokale_sessions
+    from daemon.lan_sessions import hole_alle_lan_sessions, lies_lan_konfig
     from daemon.sessions_source import (
         PAYLOAD_LIMIT_GROSS,
         SESSION_FELDER,
@@ -42,6 +43,7 @@ except ImportError:
     # Running the script directly puts its own folder on sys.path, not the
     # repo root — the tray app and the tests import it the other way around.
     import lokale_sessions
+    from lan_sessions import hole_alle_lan_sessions, lies_lan_konfig
     from sessions_source import (
         PAYLOAD_LIMIT_GROSS,
         SESSION_FELDER,
@@ -270,6 +272,23 @@ def report_unknown_ratelimit_headers(headers) -> None:
         log("No rate-limit headers beyond the ones already used.")
 
 
+async def _kein_abruf() -> None:
+    return None
+
+
+async def _lan_sessions_holen(http, urls: list[str], token: str | None) -> list[dict]:
+    """LAN-Sessions mit zweiter Absicherung: Der LAN-Teil darf nie mehr kosten
+    als sich selbst. Ein unerwarteter Fehler ergibt eine leere Liste; Server-
+    und lokale Sessions bleiben davon unberührt (Sicherheitsprüfung 16.11.)."""
+    try:
+        ergebnis = await hole_alle_lan_sessions(http, urls, token)
+    except Exception as e:  # noqa: BLE001 — Fremddaten, nie den Sendeweg kippen
+        logging.getLogger(__name__).debug(
+            "LAN-Sessions unerwartet gescheitert: %s", e.__class__.__name__)
+        return []
+    return ergebnis if isinstance(ergebnis, list) else []
+
+
 async def add_session_fields_paar(payload: dict) -> tuple[dict, dict]:
     """Zwei Fassungen derselben Nutzlast: grosszuegig und sicher.
 
@@ -280,21 +299,33 @@ async def add_session_fields_paar(payload: dict) -> tuple[dict, dict]:
     darauf zu verlassen, dass der grosse Weg ueberall funktioniert.
     """
     url, token = read_sessions_config(CONFIG_FILE)
+    lan_urls, lan_token = lies_lan_konfig(CONFIG_FILE)
     state = None
-    if url:
+    lan_sessions = []
+    if url or lan_urls:
+        # Server und LAN-Quellen gleichzeitig im selben Client: Ein
+        # schlafender Autodarts-PC verlängert den Takt höchstens um das
+        # LAN-Timeout, statt es auf den Serverabruf aufzuaddieren.
         async with httpx.AsyncClient() as http:
-            state = await fetch_sessions(http, url, token)
+            state, lan_sessions = await asyncio.gather(
+                fetch_sessions(http, url, token) if url else _kein_abruf(),
+                _lan_sessions_holen(http, lan_urls, lan_token))
 
     # Die Sessions auf DIESEM Rechner kommen dazu. Timo, 2026-09-27: "ja das
     # wäre top wenn die PC Session da auch mit drin ist." Sie werden in die
     # Serverantwort eingehängt, nicht daneben gestellt — so laufen Kürzung,
     # Budget und "+N more" unverändert durch den vorhandenen Weg.
     #
+    # Die Sessions eines zweiten PCs im LAN laufen denselben Weg. Timo,
+    # 2026-11-16: "sicherstellen, dass die laufenden Sessions korrekt angezeigt
+    # werden" — die Remote-Control-Session auf dem Autodarts-PC fehlte.
+    #
     # Nur zusammen mit einer Serverantwort. Ist kein `sessions_url` eingetragen
     # oder der Server nicht erreichbar, gehen gar keine Sessionfelder raus, und
     # das Gerät zeigt nach seiner Karenzzeit den Leerzustand. Timo, 2026-09-28:
-    # "nicht nur die lokale PC Session."
-    state = lokale_sessions.ergaenze(state)
+    # "nicht nur die lokale PC Session." Das gilt für LAN-Sessions ebenso.
+    lokale = lokale_sessions.lies_lokale_sessions() + lan_sessions
+    state = lokale_sessions.ergaenze(state, lokale)
     if state is None:
         return payload, payload
     return (merge_into_payload(payload, state, PAYLOAD_LIMIT_GROSS),

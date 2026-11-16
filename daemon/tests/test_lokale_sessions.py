@@ -123,3 +123,14 @@ def test_ohne_lokale_sessions_bleibt_die_serverantwort_inhaltlich_gleich():
               "sessions": [{"name": "A", "zustand": "arbeitet", "seit_sekunden": 1}]}
     assert ergaenze(server, lokale=[]) == server
     assert ergaenze(None, lokale=[]) is None
+
+
+def test_riesige_zeitstempel_kosten_nur_diesen_eintrag(tmp_path):
+    """Sicherheitsprüfung 16.11.: 10**400 passt in kein float (OverflowError)."""
+    _schreibe(tmp_path, os.getpid(), "heil", "busy")
+    riesig = "1" + "0" * 400
+    (tmp_path / "riesig.json").write_text(
+        '{"pid": %d, "name": "riesig", "status": "busy", '
+        '"statusUpdatedAt": %s, "updatedAt": %s}' % (os.getpid(), riesig, riesig),
+        encoding="utf-8")
+    assert [s["name"] for s in lies_lokale_sessions(tmp_path)] == ["heil"]
