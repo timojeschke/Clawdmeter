@@ -25,7 +25,4 @@ void ui_prev_screen(void);
 
 screen_t ui_get_current_screen(void);
 void ui_update_ble_status(ble_state_t state, const char* name, const char* mac);
-// USB-Kabel: true, solange der Daemon seriell Nutzlasten schickt. Zaehlt fuer
-// die Anzeige wie eine BLE-Verbindung (kein Kopplungshinweis, "Connected").
-void ui_update_serial_link(bool active);
 void ui_update_battery(int percent, bool charging, bool vbus_in);

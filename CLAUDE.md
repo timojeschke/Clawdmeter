@@ -250,8 +250,6 @@ See `~/.claude/projects/.../memory/` files for persistent context (user is an em
 
 Bash daemon (`daemon/claude-usage-daemon.sh`) reads OAuth token, polls Anthropic API, sends JSON over BLE GATT. Run with `systemctl --user start claude-usage-daemon`. The unit file's `ExecStart` is the absolute path to the script — repoint it when switching between the worktree and the main checkout.
 
-**USB cable path (Windows daemon only, 2026-11-16):** the Windows daemon prefers the serial port (Espressif VID 0x303A, override `CLAWDMETER_SERIAL_PORT`) and sends each payload as one JSON line. The firmware treats a serial line starting with `{` as a payload (`apply_payload()` in `main.cpp`, shared with BLE; the firmware answers each line with `{"ack":true}` or `{"ack":false}`; lines over 1023 bytes are dropped whole). Serial payloads count as "connected" in the UI (`ui_update_serial_link()`, 90 s window). DTR/RTS stay off when opening, else the C6 resets. BLE remains the fallback: no ack after two payloads (old firmware) or two `ack:false` count as cable failure. The daemon then retries the cable after 60, 120, then 300 s (reset only after a run with ack), and while on BLE checks every 30 s whether the port really opens before switching. macOS/Linux daemons are unchanged (BLE only).
-
 **Discovery & resilience:**
 
 - Connects by name (`"Clawdmeter"`) on first run, caches resolved MAC at `~/.config/claude-usage-monitor/ble-address`. ESP32 BLE addresses are factory-burned per-chip, so swapping any board invalidates the cache.

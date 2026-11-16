@@ -29,13 +29,6 @@ from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 
 try:
-    import serial
-    from serial.tools import list_ports
-except ImportError:  # pyserial fehlt (aeltere Installation): dann nur BLE.
-    serial = None
-    list_ports = None
-
-try:
     from daemon import lokale_sessions
     from daemon.sessions_source import (
         PAYLOAD_LIMIT_GROSS,
@@ -106,18 +99,6 @@ RECONNECT_BACKOFF_CAP = 8  # D-05: fast-reconnect cap (seconds); keeps stacked r
 # Optional reset chime.
 # Optional clock display. 
 # Config lives under the same Clawdmeter dir as daemon.log.
-# Kabelweg (USB-Serial-JTAG des ESP32): Espressif-VID, Zeilen von hoechstens
-# SERIAL_MAX_ZEILE Byte (Firmware-Puffer 1024 inkl. Endezeichen).
-SERIAL_VID = 0x303A
-SERIAL_BAUD = 115200            # ohne Bedeutung fuer USB-CDC, pyserial verlangt einen Wert
-SERIAL_MAX_ZEILE = 1000
-SERIAL_SPERREN_S = (60, 120, 300)  # BLE-Zeit nach dem 1., 2., 3.+ Kabelfehler in Folge
-SERIAL_PRUEFUNG_S = 30          # so oft schaut die BLE-Schleife nach dem Kabel
-SERIAL_ACK_FRIST_S = 1.0        # so lange darf die Quittung der letzten Nutzlast dauern
-SERIAL_OHNE_ACK_MAX = 2         # so viele Nutzlasten ohne Quittung, dann gilt das Kabel als aus
-SERIAL_NACK_MAX = 2             # so viele ack:false in Folge, dann ebenso
-SERIAL_LESEN_S = 0.2            # Takt, in dem Eingang des Geraets verworfen wird
-
 CONFIG_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Clawdmeter" / "config"
 
 API_URL = "https://api.anthropic.com/v1/messages"
@@ -732,227 +713,6 @@ class Session:
             return False
 
 
-def finde_serial_port() -> str | None:
-    """Der Port des Clawdmeter am Kabel, oder None.
-
-    CLAWDMETER_SERIAL_PORT (z. B. COM3) gilt vor allem anderen. Sonst der erste
-    Port mit Espressif-VID 0x303A.
-    """
-    if serial is None:
-        return None
-    override = os.environ.get("CLAWDMETER_SERIAL_PORT", "").strip()
-    if override:
-        return override
-    try:
-        treffer = sorted(p.device for p in list_ports.comports() if p.vid == SERIAL_VID)
-    except (OSError, ValueError) as e:
-        log(f"Serial: Portsuche fehlgeschlagen: {e}")
-        return None
-    if len(treffer) > 1:
-        log(f"Serial: mehrere Espressif-Ports {treffer}, nehme {treffer[0]}")
-    return treffer[0] if treffer else None
-
-
-def oeffne_serial(port: str):
-    """Oeffnet den Port, ohne das Geraet zurueckzusetzen.
-
-    DTR/RTS steuern beim USB-Serial-JTAG Reset und Bootmodus. Deshalb Serial()
-    ohne Port anlegen, beide Leitungen auf False setzen und erst dann oeffnen.
-    """
-    ser = serial.Serial()
-    ser.baudrate = SERIAL_BAUD
-    ser.timeout = 0
-    ser.write_timeout = 2
-    ser.dtr = False
-    ser.rts = False
-    ser.port = port
-    ser.open()
-    return ser
-
-
-class SerialSession:
-    """Gleiche Schnittstelle wie Session, aber eine JSON-Zeile je Nutzlast.
-
-    Die Firmware quittiert jede Zeile mit `{"ack":true}` oder `{"ack":false}`.
-    Fehlt die Quittung, gilt das Kabel als ausgefallen: Eine alte Firmware
-    liest die Zeilen nicht und schweigt.
-    """
-
-    def __init__(self, ser) -> None:
-        self.ser = ser
-        self.refresh_requested = asyncio.Event()  # das Kabel kennt keinen Wunsch
-        self.offen = True
-        self.gesendet = 0           # Nutzlasten, die rausgingen
-        self.quittiert = 0          # davon mit ack:true bestaetigt
-        self.nacks_in_folge = 0
-        self.letzter_versand = 0.0  # time.monotonic()
-        self._eingang = b""
-
-    def _quittungen_auswerten(self, daten: bytes) -> None:
-        """Sucht ack-Zeilen im Eingang; der Rest (Firmware-Log) wird verworfen."""
-        self._eingang = (self._eingang + daten)[-4096:]
-        *zeilen, self._eingang = self._eingang.split(b"\n")
-        for zeile in zeilen:
-            zeile = zeile.strip()
-            if not zeile.startswith(b'{"ack":'):
-                continue
-            if zeile.startswith(b'{"ack":true'):
-                self.quittiert += 1
-                self.nacks_in_folge = 0
-            elif zeile.startswith(b'{"ack":false'):
-                self.nacks_in_folge += 1
-
-    def _quittung_fehlt(self) -> str | None:
-        """Grund, warum das Kabel als ausgefallen gilt, sonst None."""
-        if self.nacks_in_folge >= SERIAL_NACK_MAX:
-            return f"Gerät lehnt Nutzlasten ab ({self.nacks_in_folge}x ack:false)"
-        offen_ack = self.gesendet - self.quittiert
-        if (offen_ack >= SERIAL_OHNE_ACK_MAX
-                and time.monotonic() - self.letzter_versand >= SERIAL_ACK_FRIST_S):
-            return "keine Quittung vom Gerät (alte Firmware?)"
-        return None
-
-    def ist_offen(self) -> bool:
-        if self.offen:
-            grund = self._quittung_fehlt()
-            if grund:
-                log(f"Kabel: {grund}")
-                self.offen = False
-        return self.offen
-
-    async def eingang_lesen(self) -> None:
-        """Liest den Eingang des Geraets: ack-Zeilen zaehlen, Rest verwerfen.
-
-        Wuerde das Log der Firmware liegen bleiben, liefe der Sendepuffer des
-        Geraets voll.
-        """
-        while self.offen:
-            try:
-                wartend = self.ser.in_waiting
-                if wartend:
-                    self._quittungen_auswerten(self.ser.read(wartend))
-            except (serial.SerialException, OSError) as e:
-                log(f"Serial: Lesen fehlgeschlagen: {e}")
-                self.offen = False
-                return
-            await asyncio.sleep(SERIAL_LESEN_S)
-
-    async def write_payload(self, payload: dict,
-                            kleiner: dict | None = None) -> dict | None:
-        """Sendet die erste Fassung, die in eine Zeile passt. None bei Fehler."""
-        ohne_sessions = {k: v for k, v in payload.items() if k not in SESSION_FELDER}
-        for fassung in (payload, kleiner, ohne_sessions):
-            if fassung is None:
-                continue
-            daten = json.dumps(fassung, separators=(",", ":"),
-                               ensure_ascii=False).encode("utf-8", errors="replace")
-            if len(daten) > SERIAL_MAX_ZEILE:
-                log(f"Serial: Nutzlast zu lang ({len(daten)} Byte), nehme kleinere Fassung")
-                continue
-            log(f"Sending (seriell): {daten.decode()}")
-            try:
-                # write_timeout begrenzt die Wartezeit; im Thread, damit der
-                # Event-Loop (Tray, Quit) nicht blockiert.
-                await asyncio.to_thread(self.ser.write, daten + b"\n")
-            except (serial.SerialException, OSError) as e:
-                log(f"Serial: Schreiben fehlgeschlagen: {e}")
-                self.offen = False
-                return None
-            self.gesendet += 1
-            self.letzter_versand = time.monotonic()
-            return fassung
-        return None
-
-    def schliessen(self) -> None:
-        self.offen = False
-        try:
-            self.ser.close()
-        except (serial.SerialException, OSError):
-            pass
-
-
-async def serial_run(port: str, stop_event: asyncio.Event, tray_state=None) -> bool:
-    """Oeffnet den Port und faehrt den Takt, bis er ausfaellt oder gestoppt wird.
-
-    Gibt True zurueck, wenn das Geraet mindestens eine Nutzlast quittiert hat.
-    Alles andere (Oeffnen scheitert, keine Quittung, Schreibfehler) ist False;
-    der Aufrufer faellt dann auf BLE zurueck.
-    """
-    log(f"Serial: oeffne {port}")
-    try:
-        ser = await asyncio.to_thread(oeffne_serial, port)
-        # Ende einer womoeglich halb empfangenen Zeile; die Firmware ignoriert
-        # eine leere Zeile.
-        await asyncio.to_thread(ser.write, b"\n")
-    except (serial.SerialException, OSError, ValueError) as e:
-        log(f"Serial: Oeffnen von {port} fehlgeschlagen: {e}")
-        return False
-    session = SerialSession(ser)
-    leser = asyncio.ensure_future(session.eingang_lesen())
-    log(f"Serial: verbunden mit {port}")
-    try:
-        await takt_schleife(session, session.ist_offen, stop_event, tray_state)
-        return session.quittiert > 0
-    finally:
-        session.schliessen()
-        leser.cancel()
-        await asyncio.gather(leser, return_exceptions=True)
-        log("Serial: getrennt" if not stop_event.is_set() else "Stopping")
-
-
-def pruefe_serial_port(port: str) -> bool:
-    """Laesst sich der Port oeffnen? Kurz auf und zu, ohne etwas zu senden."""
-    try:
-        oeffne_serial(port).close()
-    except (serial.SerialException, OSError, ValueError) as e:
-        log(f"Serial: Port {port} nicht zu oeffnen: {e}")
-        return False
-    return True
-
-
-class KabelWahl:
-    """Wann das Kabel versucht wird: Sperrzeiten nach Fehlern, gestuft.
-
-    Ein Fehlschlag sperrt das Kabel 60, 120, dann 300 s. Die Stufe geht erst
-    nach einem Kabellauf mit Quittung zurueck.
-    """
-
-    def __init__(self) -> None:
-        self.fehler_in_folge = 0
-        self.gesperrt_bis = 0.0     # time.monotonic()
-        self.zuletzt_geprueft = 0.0
-
-    def fehlschlag(self, quittiert: bool) -> None:
-        self.fehler_in_folge = 1 if quittiert else self.fehler_in_folge + 1
-        stufe = min(self.fehler_in_folge, len(SERIAL_SPERREN_S)) - 1
-        self.gesperrt_bis = time.monotonic() + SERIAL_SPERREN_S[stufe]
-
-    async def naechster_port(self) -> str | None:
-        """Port des Kabels, wenn ein Versuch erlaubt ist, sonst None."""
-        if time.monotonic() < self.gesperrt_bis:
-            return None
-        return await asyncio.to_thread(finde_serial_port)
-
-    async def wieder_da(self) -> bool:
-        """Fuer die BLE-Schleife: Lohnt sich der Wechsel zum Kabel?
-
-        Nur alle SERIAL_PRUEFUNG_S, und nur wenn sich der Port wirklich oeffnen
-        laesst. Sonst risse der Wechsel die BLE-Verbindung ohne Gegenwert ab.
-        """
-        jetzt = time.monotonic()
-        if jetzt - self.zuletzt_geprueft < SERIAL_PRUEFUNG_S:
-            return False
-        self.zuletzt_geprueft = jetzt
-        port = await self.naechster_port()
-        if port is None:
-            return False
-        if not await asyncio.to_thread(pruefe_serial_port, port):
-            self.fehlschlag(quittiert=False)
-            return False
-        log("Serial: Kabel erkannt, wechsle von BLE auf seriell")
-        return True
-
-
 def _extract_access_token(blob: str) -> str | None:
     """Pull the accessToken out of a credentials blob.
 
@@ -1161,172 +921,6 @@ def sendung_faellig(neu: dict, zuletzt_gesendet: dict | None, jetzt: float,
     return ohne_zeitfelder(neu) != ohne_zeitfelder(zuletzt_gesendet)
 
 
-# Prueft, ob das Kabel wieder da ist; main() setzt es, die BLE-Schleife ruft es
-# je Takt. Modulweit statt als Parameter, damit connect_and_run seine
-# Signatur behaelt.
-_kabel_abbruch = None
-
-
-async def takt_schleife(session, verbunden, stop_event: asyncio.Event,
-                        tray_state=None, abbruch=None) -> bool:
-    """Poll- und Session-Takt auf einem Uebertragungsweg (BLE oder Kabel).
-
-    `session` hat `write_payload(payload, kleiner)` und `refresh_requested`.
-    `verbunden()` sagt, ob der Weg noch steht; `abbruch()` (optional, async) beendet
-    die Schleife von aussen, etwa wenn ein besserer Weg wieder da ist.
-    Gibt zurueck, ob mindestens ein Schreibvorgang gelang.
-    """
-    naechster_poll = 0.0  # D-03: poll immediately on first connect
-    # Session states change on a scale of seconds; the usage numbers move over
-    # hours. Tying both to POLL_INTERVAL would mean a stale session screen, and
-    # polling Anthropic every 10 s to fix that would be wasteful and rude. So
-    # the session fields get their own, faster beat on the last usage payload.
-    last_sessions_push = 0.0
-    letzte_nutzlast = None      # Nutzungszahlen ohne Sessionfelder
-    letzter_poll_erfolg = None  # wann diese Zahlen geholt wurden
-    letzter_schreibvorgang = 0.0  # fuer den Herzschlag des Session-Takts
-    zuletzt_gesendet = None     # was wirklich zuletzt ueber Funk ging
-    used_successfully = False
-    consecutive_failures = 0  # D-03: zombie-link break counter
-    while verbunden() and not stop_event.is_set():
-        now = time.time()
-        if session.refresh_requested.is_set() or now >= naechster_poll:
-            session.refresh_requested.clear()
-            poll_gelungen = False
-            token = read_token()  # D-09: fresh each cycle
-            if not token:
-                log("No token; skipping poll")
-                # Die alte Nutzung nicht weiter als gueltig fuehren: Die
-                # Basis des Session-Takts faellt auf `ok:false`.
-                letzte_nutzlast = None
-                if tray_state:
-                    tray_state.set_error("token expired — run claude login")
-            else:
-                expired = False
-                try:
-                    payload = await poll_api(token)
-                except AuthError:
-                    # Real 401/403 — token genuinely needs a refresh.
-                    expired = True
-                    # Die alte Nutzung darf nach dem naechsten Takt nicht
-                    # wieder auftauchen, deshalb verwerfen.
-                    letzte_nutzlast = None
-                    if tray_state:
-                        tray_state.set_error("token expired — run claude login")
-                    payload = None
-                if payload is not None:
-                    poll_gelungen = True
-                    letzter_poll_erfolg = time.time()
-                    # Only on the slow beat: this is a second HTTP call and
-                    # a weekly figure does not move between two 10 s ticks.
-                    scoped = await poll_usage(read_anmelde_token() or token)
-                    if scoped:
-                        payload["fn"], payload["fp"] = scoped.name[:10], scoped.prozent
-                        if scoped.reset_min is not None:
-                            payload["fr"] = scoped.reset_min
-                    letzte_nutzlast = dict(payload)
-                    payload, payload_sicher = await add_session_fields_paar(payload)
-                    gesendet = await session.write_payload(payload, payload_sicher)
-                    if gesendet is not None:
-                        zuletzt_gesendet = dict(gesendet)
-                        letzter_schreibvorgang = time.time()
-                        last_sessions_push = letzter_schreibvorgang
-                        used_successfully = True
-                        consecutive_failures = 0  # D-03: reset on success
-                        if tray_state:
-                            tray_state.set_connected(time.time())
-                    else:
-                        consecutive_failures += 1
-                        if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
-                            log(
-                                f"Zombie link detected ({consecutive_failures} consecutive"
-                                f" write failures); abandoning connection"
-                            )
-                            break
-                elif expired and (zuletzt_gesendet is None
-                                  or zuletzt_gesendet.get("ok") is not False):
-                    # Token genuinely dead -> show "No data" now instead of
-                    # stale numbers. Same reasoning as the 429 handling above:
-                    # a frozen display that still shows yesterday's figure is
-                    # worse than one that admits it does not know.
-                    # Ging `ok:false` schon raus, schickt der Session-Takt den
-                    # Rest; dann hier nicht alle 15 s noch einmal dasselbe.
-                    log("No data (token dead); signalling idle to device")
-                    if await session.write_payload({"ok": False}):
-                        zuletzt_gesendet = {"ok": False}
-                        letzter_schreibvorgang = time.time()
-                        consecutive_failures = 0
-                    else:
-                        consecutive_failures += 1
-                        if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
-                            log(
-                                f"Zombie link detected ({consecutive_failures} consecutive"
-                                f" write failures); abandoning connection"
-                            )
-                            break
-                # else: payload is None from a TRANSIENT failure (network/DNS,
-                # timeout, rate-limit, 5xx). poll_api already logged it; do NOT
-                # toast "token expired" — that mislabeled a boot-time DNS blip
-                # as an auth problem (SC#5). Leave tray state unchanged; the next
-                # try (in POLL_WIEDERHOLUNG_NACH_FEHLER_S) recovers it.
-            naechster_poll = naechster_poll_zeitpunkt(time.time(), poll_gelungen)
-
-        # Faster beat for the session fields. Laeuft IMMER, auch wenn noch
-        # nie ein Poll gelang: Die Basis (basis_nutzlast) ist dann `ok:false`
-        # plus Uhr, und die Sessions-Seite lebt bei API-Ausfall weiter. Die
-        # Nutzung wird dabei nicht unveraendert wiederholt, sondern mit
-        # fortgeschriebener Zeit — und nur bis NUTZUNG_GILT_S.
-        if time.time() - last_sessions_push >= SESSIONS_PUSH_INTERVAL:
-            jetzt = time.time()
-            basis = basis_nutzlast(letzte_nutzlast, letzter_poll_erfolg,
-                                   jetzt, uhr_felder())
-            aktualisiert, sicher = await add_session_fields_paar(basis)
-            # Compare against what was last actually SENT, not against the
-            # usage-only payload: the latter never carries session fields,
-            # so the two always differed and the beat wrote every 10 s
-            # even when nothing had changed (field observation 2026-09-25).
-            if sendung_faellig(aktualisiert, zuletzt_gesendet, jetzt,
-                               letzter_schreibvorgang):
-                gesendet = await session.write_payload(aktualisiert, sicher)
-                if gesendet is not None:
-                    zuletzt_gesendet = dict(gesendet)
-                    letzter_schreibvorgang = time.time()
-                    last_sessions_push = letzter_schreibvorgang
-                    consecutive_failures = 0
-                    # Auch das ist ein erfolgreicher Schreibvorgang. Ohne
-                    # dieses Flag meldet connect_and_run "nie erfolgreich
-                    # geschrieben", obwohl gerade Daten ankamen — und zwar
-                    # genau dann, wenn der erste Erfolg ueber diesen Takt
-                    # lief statt ueber den Minutenpoll, was beim Start der
-                    # Normalfall ist (last_sessions_push startet auf 0.0).
-                    # Der Fehler kam mit 040a21a, als dieser Takt entstand.
-                    used_successfully = True
-                else:
-                    consecutive_failures += 1
-                    if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
-                        log(
-                            f"Zombie link detected ({consecutive_failures} consecutive"
-                            f" write failures); abandoning connection"
-                        )
-                        break
-            else:
-                # Nichts zu senden: nur den Takt weiterschieben. Der
-                # Schreibvorgang-Zeitpunkt bleibt, sonst kaeme der
-                # Herzschlag nie.
-                last_sessions_push = time.time()
-
-        if abbruch is not None and await abbruch():
-            break
-
-        # Wake on a refresh request OR a stop, whichever comes first. Waking
-        # promptly on stop_event is what lets the finally below run
-        # client.disconnect() before the process exits, so the peer gets a
-        # clean GATT disconnect (returns to its waiting screen) instead of
-        # being left frozen on stale data after Quit (SC#3 graceful shutdown).
-        await _wait_first(session.refresh_requested, stop_event, timeout=TICK)
-    return used_successfully
-
-
 async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) -> bool:
     """Connect to device and poll until disconnected or stopped.
 
@@ -1389,11 +983,152 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
     session = Session(client)
     await session.setup_refresh_subscription()
 
+    naechster_poll = 0.0  # D-03: poll immediately on first connect
+    # Session states change on a scale of seconds; the usage numbers move over
+    # hours. Tying both to POLL_INTERVAL would mean a stale session screen, and
+    # polling Anthropic every 10 s to fix that would be wasteful and rude. So
+    # the session fields get their own, faster beat on the last usage payload.
+    last_sessions_push = 0.0
+    letzte_nutzlast = None      # Nutzungszahlen ohne Sessionfelder
+    letzter_poll_erfolg = None  # wann diese Zahlen geholt wurden
+    letzter_schreibvorgang = 0.0  # fuer den Herzschlag des Session-Takts
+    zuletzt_gesendet = None     # was wirklich zuletzt ueber Funk ging
     used_successfully = False
+    consecutive_failures = 0  # D-03: zombie-link break counter
     try:
-        used_successfully = await takt_schleife(
-            session, lambda: client.is_connected, stop_event, tray_state,
-            _kabel_abbruch)
+        while client.is_connected and not stop_event.is_set():
+            now = time.time()
+            if session.refresh_requested.is_set() or now >= naechster_poll:
+                session.refresh_requested.clear()
+                poll_gelungen = False
+                token = read_token()  # D-09: fresh each cycle
+                if not token:
+                    log("No token; skipping poll")
+                    # Die alte Nutzung nicht weiter als gueltig fuehren: Die
+                    # Basis des Session-Takts faellt auf `ok:false`.
+                    letzte_nutzlast = None
+                    if tray_state:
+                        tray_state.set_error("token expired — run claude login")
+                else:
+                    expired = False
+                    try:
+                        payload = await poll_api(token)
+                    except AuthError:
+                        # Real 401/403 — token genuinely needs a refresh.
+                        expired = True
+                        # Die alte Nutzung darf nach dem naechsten Takt nicht
+                        # wieder auftauchen, deshalb verwerfen.
+                        letzte_nutzlast = None
+                        if tray_state:
+                            tray_state.set_error("token expired — run claude login")
+                        payload = None
+                    if payload is not None:
+                        poll_gelungen = True
+                        letzter_poll_erfolg = time.time()
+                        # Only on the slow beat: this is a second HTTP call and
+                        # a weekly figure does not move between two 10 s ticks.
+                        scoped = await poll_usage(read_anmelde_token() or token)
+                        if scoped:
+                            payload["fn"], payload["fp"] = scoped.name[:10], scoped.prozent
+                            if scoped.reset_min is not None:
+                                payload["fr"] = scoped.reset_min
+                        letzte_nutzlast = dict(payload)
+                        payload, payload_sicher = await add_session_fields_paar(payload)
+                        gesendet = await session.write_payload(payload, payload_sicher)
+                        if gesendet is not None:
+                            zuletzt_gesendet = dict(gesendet)
+                            letzter_schreibvorgang = time.time()
+                            last_sessions_push = letzter_schreibvorgang
+                            used_successfully = True
+                            consecutive_failures = 0  # D-03: reset on success
+                            if tray_state:
+                                tray_state.set_connected(time.time())
+                        else:
+                            consecutive_failures += 1
+                            if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
+                                log(
+                                    f"Zombie link detected ({consecutive_failures} consecutive"
+                                    f" write failures); abandoning connection"
+                                )
+                                break
+                    elif expired and (zuletzt_gesendet is None
+                                      or zuletzt_gesendet.get("ok") is not False):
+                        # Token genuinely dead -> show "No data" now instead of
+                        # stale numbers. Same reasoning as the 429 handling above:
+                        # a frozen display that still shows yesterday's figure is
+                        # worse than one that admits it does not know.
+                        # Ging `ok:false` schon raus, schickt der Session-Takt den
+                        # Rest; dann hier nicht alle 15 s noch einmal dasselbe.
+                        log("No data (token dead); signalling idle to device")
+                        if await session.write_payload({"ok": False}):
+                            zuletzt_gesendet = {"ok": False}
+                            letzter_schreibvorgang = time.time()
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                            if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
+                                log(
+                                    f"Zombie link detected ({consecutive_failures} consecutive"
+                                    f" write failures); abandoning connection"
+                                )
+                                break
+                    # else: payload is None from a TRANSIENT failure (network/DNS,
+                    # timeout, rate-limit, 5xx). poll_api already logged it; do NOT
+                    # toast "token expired" — that mislabeled a boot-time DNS blip
+                    # as an auth problem (SC#5). Leave tray state unchanged; the next
+                    # try (in POLL_WIEDERHOLUNG_NACH_FEHLER_S) recovers it.
+                naechster_poll = naechster_poll_zeitpunkt(time.time(), poll_gelungen)
+
+            # Faster beat for the session fields. Laeuft IMMER, auch wenn noch
+            # nie ein Poll gelang: Die Basis (basis_nutzlast) ist dann `ok:false`
+            # plus Uhr, und die Sessions-Seite lebt bei API-Ausfall weiter. Die
+            # Nutzung wird dabei nicht unveraendert wiederholt, sondern mit
+            # fortgeschriebener Zeit — und nur bis NUTZUNG_GILT_S.
+            if time.time() - last_sessions_push >= SESSIONS_PUSH_INTERVAL:
+                jetzt = time.time()
+                basis = basis_nutzlast(letzte_nutzlast, letzter_poll_erfolg,
+                                       jetzt, uhr_felder())
+                aktualisiert, sicher = await add_session_fields_paar(basis)
+                # Compare against what was last actually SENT, not against the
+                # usage-only payload: the latter never carries session fields,
+                # so the two always differed and the beat wrote every 10 s
+                # even when nothing had changed (field observation 2026-09-25).
+                if sendung_faellig(aktualisiert, zuletzt_gesendet, jetzt,
+                                   letzter_schreibvorgang):
+                    gesendet = await session.write_payload(aktualisiert, sicher)
+                    if gesendet is not None:
+                        zuletzt_gesendet = dict(gesendet)
+                        letzter_schreibvorgang = time.time()
+                        last_sessions_push = letzter_schreibvorgang
+                        consecutive_failures = 0
+                        # Auch das ist ein erfolgreicher Schreibvorgang. Ohne
+                        # dieses Flag meldet connect_and_run "nie erfolgreich
+                        # geschrieben", obwohl gerade Daten ankamen — und zwar
+                        # genau dann, wenn der erste Erfolg ueber diesen Takt
+                        # lief statt ueber den Minutenpoll, was beim Start der
+                        # Normalfall ist (last_sessions_push startet auf 0.0).
+                        # Der Fehler kam mit 040a21a, als dieser Takt entstand.
+                        used_successfully = True
+                    else:
+                        consecutive_failures += 1
+                        if consecutive_failures >= ZOMBIE_BREAK_LIMIT:
+                            log(
+                                f"Zombie link detected ({consecutive_failures} consecutive"
+                                f" write failures); abandoning connection"
+                            )
+                            break
+                else:
+                    # Nichts zu senden: nur den Takt weiterschieben. Der
+                    # Schreibvorgang-Zeitpunkt bleibt, sonst kaeme der
+                    # Herzschlag nie.
+                    last_sessions_push = time.time()
+
+            # Wake on a refresh request OR a stop, whichever comes first. Waking
+            # promptly on stop_event is what lets the finally below run
+            # client.disconnect() before the process exits, so the peer gets a
+            # clean GATT disconnect (returns to its waiting screen) instead of
+            # being left frozen on stale data after Quit (SC#3 graceful shutdown).
+            await _wait_first(session.refresh_requested, stop_event, timeout=TICK)
     finally:
         # Clean GATT disconnect on the way out — this is what tells the peripheral
         # the link is gone. WinRT can surface a raw OSError (not BleakError) here,
@@ -1450,7 +1185,7 @@ async def main(tray_state=None) -> None:
                     # Not the main thread of the main interpreter — tray owns shutdown.
                     pass
 
-    log("=== Claude Usage Tracker Daemon (USB seriell + BLE, Windows) ===")
+    log("=== Claude Usage Tracker Daemon (BLE, Windows) ===")
     log(f"Poll interval: {POLL_INTERVAL}s")
     # Only WHICH source, never the value — the log file is read by people and
     # sessions alike.
@@ -1461,22 +1196,7 @@ async def main(tray_state=None) -> None:
     # D-05: two distinct backoff regimes — slow-search (device absent) vs fast-reconnect (link dropped)
     search_backoff = 1     # caps at 60s — gentle, for a device that is genuinely absent/off
     reconnect_backoff = 1  # caps at RECONNECT_BACKOFF_CAP — fast, to clear the 120s SLA after a drop
-    kabel = KabelWahl()
-    global _kabel_abbruch
-    _kabel_abbruch = kabel.wieder_da
     while not stop_event.is_set():
-        # Kabel zuerst. Fehler oder kein Port: weiter mit BLE, nach der
-        # gestuften Sperrzeit wieder seriell.
-        port = await kabel.naechster_port()
-        if port:
-            quittiert = await serial_run(port, stop_event, tray_state)
-            if stop_event.is_set():
-                break
-            kabel.fehlschlag(quittiert)
-            if tray_state:
-                tray_state.set_scanning()
-            log("Serial: ausgefallen, Rueckfall auf BLE")
-
         device = await acquire_target()
         if not device:
             # Slow-search regime: device was not found by scan — back off gently
