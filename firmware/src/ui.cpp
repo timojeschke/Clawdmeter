@@ -382,6 +382,9 @@ static lv_obj_t* mini_kreatur = NULL;
 static UsageData letzte_daten;
 static bool sessionseite_leer = false;
 static bool     s_ble_connected = false;   // cached BLE connection state
+static bool     s_serial_link   = false;   // Daemon sendet ueber das USB-Kabel
+// Fuer die Anzeige zaehlt jeder Weg zum Daemon: BLE oder Kabel.
+static bool host_verbunden(void) { return s_ble_connected || s_serial_link; }
 static uint32_t connected_at_ms = 0;       // when we last entered CONNECTED ("Connected" dwell)
 
 // Animation state
@@ -867,7 +870,7 @@ static bool anim_weiterschalten(void) {
 // Text der Statuszeile im Ruhezustand ohne Daten: ohne Funk "Waiting", mit
 // Funk im Wechsel "Listening" und "No data", damit sie lebt UND datenlos wirkt.
 static const char* anim_ruhetext(void) {
-    if (!s_ble_connected) return "Waiting";
+    if (!host_verbunden()) return "Waiting";
     return (anim_msg_idx & 1) ? "No data" : "Listening";
 }
 
@@ -1316,7 +1319,7 @@ void ui_update(const UsageData* data) {
 static void update_view_state(void) {
     if (!usage_group || !pair_group || !idle_group) return;
     int v;
-    if (!s_ble_connected) {
+    if (!host_verbunden()) {
         v = 0;  // pairing hint
     } else if (data_received && data_ok && (lv_tick_get() - last_data_ms) < DATA_FRESH_MS) {
         v = 2;  // live usage
@@ -1400,7 +1403,7 @@ void ui_tick_anim(void) {
 
     // Status text by priority. Whimsical messages only when connected & settled.
     const char* text;
-    if (!s_ble_connected) {
+    if (!host_verbunden()) {
         text = "Waiting";              // advertising / waiting for a host connection
     } else if (view_state == 1) {      // idle — alternate so it reads as alive AND data-less
         text = anim_ruhetext();
@@ -1578,20 +1581,31 @@ screen_t ui_get_current_screen(void) {
     return current_screen;
 }
 
-void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) {
-    (void)name; (void)mac;
-    bool was_connected = s_ble_connected;
-    s_ble_connected = (state == BLE_STATE_CONNECTED);
-
-    if (s_ble_connected && !was_connected) connected_at_ms = lv_tick_get();
+// Gemeinsamer Teil nach einem Wechsel von BLE oder Kabel.
+static void verbindung_geaendert(bool war_verbunden) {
+    const bool ist_verbunden = host_verbunden();
+    if (ist_verbunden && !war_verbunden) connected_at_ms = lv_tick_get();
     // pair / idle / usage — picked from connection + data freshness.
     update_view_state();
     // Die Statuszeile der leeren Sessionseite haengt am Verbindungszustand
     // ("Listening"/"No data" mit Funk, "Waiting" ohne). Der Takt baut nur bei einem
     // Wechsel von leer zu gefuellt neu auf und bemerkt das nicht.
-    if (s_ble_connected != was_connected && current_screen == SCREEN_SESSIONS) {
+    if (ist_verbunden != war_verbunden && current_screen == SCREEN_SESSIONS) {
         update_sessions_screen(&letzte_daten);
     }
+}
+
+void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) {
+    (void)name; (void)mac;
+    const bool war_verbunden = host_verbunden();
+    s_ble_connected = (state == BLE_STATE_CONNECTED);
+    verbindung_geaendert(war_verbunden);
+}
+
+void ui_update_serial_link(bool active) {
+    const bool war_verbunden = host_verbunden();
+    s_serial_link = active;
+    verbindung_geaendert(war_verbunden);
 }
 
 // Wie viele der BATT_BLOCKS Bloecke gefuellt sind: auf ganze Bloecke gerundet

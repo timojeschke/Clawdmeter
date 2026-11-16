@@ -178,10 +178,70 @@ static bool parse_json(const char* json, UsageData* out) {
     return true;
 }
 
+// Mindestabstand zwischen zwei Samples fuer usage_rate.cpp (siehe loop()).
+// 60 s und nicht 30 s: Der Ring hat 6 Plaetze, also 5 Abstaende, und die
+// Messspanne muss MIN_WINDOW_MS (240 s) erreichen. 5 x 30 s = 150 s haette die
+// Gruppe dauerhaft auf "Idle" gehalten, 5 x 60 s = 300 s reicht.
+static const uint32_t USAGE_RATE_SAMPLE_MS = 60000;
+static uint32_t usage_rate_last_ms = 0;
+static bool     usage_rate_sampled = false;
+
+// Verarbeitet eine Nutzlast des Daemons — gemeinsam fuer BLE und Seriell.
+// Gibt zurueck, ob sie sich parsen liess; die Quittung (BLE: ack/nack) macht
+// der Aufrufer, weil nur der BLE-Weg eine hat.
+static bool apply_payload(const char* json) {
+    if (!parse_json(json, &usage)) return false;
+    int g_before = usage_rate_group();
+    // Nur echte Nutzungsmessungen sampeln, und hoechstens alle 60 s:
+    // Die Session-Updates alle paar Sekunden tragen dieselbe Nutzung und
+    // fuellten den Ring mit 6 Plaetzen so schnell, dass er weniger als
+    // MIN_WINDOW_MS abdeckte (Gruppe blieb "Idle"); ein {"ok":false}
+    // sampelte 0.0 und erzeugte danach einen scheinbaren Sprung.
+    // Der Reset-Ton haengt am Rueckgabewert; ein Abfall wird beim
+    // naechsten Sample genau einmal erkannt, danach ist der Ring neu.
+    bool session_reset = false;
+    if (usage.ok && (!usage_rate_sampled ||
+                     millis() - usage_rate_last_ms >= USAGE_RATE_SAMPLE_MS)) {
+        session_reset = usage_rate_sample(usage.session_pct);
+        usage_rate_last_ms = millis();
+        usage_rate_sampled = true;
+    }
+    int g_after = usage_rate_group();
+    // 5-hour session limit refilled → chime so the user knows they can
+    // use Claude again (no-op on boards without a buzzer). Gated on the
+    // daemon's opt-in `chime` config; the `buzz` serial cmd ignores it.
+    if (session_reset && usage.chime) {
+        Serial.println("session reset detected — chime");
+        sound_hal_play_reset();
+    }
+    if (g_after != g_before) {
+        Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
+            g_before, g_after, usage.session_pct);
+        if (splash_is_active()) splash_pick_for_current_rate();
+    }
+    ui_update(&usage);
+    return true;
+}
+
 // ---- Serial command buffer ----
-#define CMD_BUF_SIZE 64
+// Eine Zeile ist entweder ein Kommando ("akku") oder, wenn sie mit '{' beginnt,
+// eine Nutzlast des Daemons ueber das USB-Kabel. Die Nutzlast bestimmt die
+// Groesse: BLE_BUF_SIZE (512) heute, mit Reserve auf 1024. Eine zu lange Zeile
+// wird ganz verworfen — abgeschnittenes JSON wuerde sonst geparst.
+#define CMD_BUF_SIZE 1024
 static char cmd_buf[CMD_BUF_SIZE];
 static int cmd_pos = 0;
+static bool cmd_overflow = false;
+
+// Seriell empfangene Nutzlasten halten die Anzeige "verbunden", solange sie
+// innerhalb dieses Fensters ankommen (Herzschlag des Daemons: 60 s, wie
+// DATA_FRESH_MS in ui.cpp).
+#define SERIAL_LINK_MS 90000
+// Empfangspuffer des USB-Treibers, unabhaengig von der Zeilenlaenge: Er muss
+// mehrere Nutzlasten fassen, falls loop() beim Zeichnen kurz nicht liest.
+#define SERIAL_RX_BUF_SIZE 2048
+static uint32_t serial_last_ms = 0;
+static bool     serial_seen    = false;
 
 static void send_screenshot() {
 #ifndef BOARD_HAS_PSRAM
@@ -243,13 +303,34 @@ static void check_serial_cmd() {
     while (Serial.available()) {
         char c = Serial.read();
         if (c == '\n' || c == '\r') {
-            cmd_buf[cmd_pos] = '\0';
-            if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
-            else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
-            else if (strcmp(cmd_buf, "akku") == 0)  print_akku_status();
+            if (cmd_overflow) {
+                Serial.println("serial: Zeile zu lang, verworfen");
+                if (cmd_buf[0] == '{') Serial.println("{\"ack\":false}");
+            } else {
+                cmd_buf[cmd_pos] = '\0';
+                if (cmd_buf[0] == '{') {
+                    // Nutzlast ueber Kabel. Die Quittung ist eine Zeile wie bei
+                    // BLE: Der Daemon erkennt daran, dass die Firmware die
+                    // Zeilen versteht (eine alte Firmware schweigt) und faellt
+                    // sonst auf BLE zurueck.
+                    if (apply_payload(cmd_buf)) {
+                        serial_last_ms = millis();
+                        serial_seen = true;
+                        Serial.println("{\"ack\":true}");
+                    } else {
+                        Serial.println("{\"ack\":false}");
+                    }
+                }
+                else if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
+                else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
+                else if (strcmp(cmd_buf, "akku") == 0)  print_akku_status();
+            }
             cmd_pos = 0;
+            cmd_overflow = false;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;
+        } else {
+            cmd_overflow = true;
         }
     }
 }
@@ -292,6 +373,9 @@ static void side_button_tick(SideButton& b) {
 }
 
 void setup() {
+    // Der Standard-Empfangspuffer (256 Byte) laeuft ueber, wenn eine Nutzlast
+    // ankommt, waehrend loop() gerade zeichnet. Vor begin() setzen.
+    Serial.setRxBufferSize(SERIAL_RX_BUF_SIZE);
     Serial.begin(115200);
     delay(300);
     Serial.println("{\"ready\":true}");
@@ -359,17 +443,9 @@ void setup() {
                       power_hal_is_vbus_in());
     ui_show_screen(SCREEN_SESSIONS);
 
-    Serial.printf("Dashboard ready (%s, %dx%d), waiting for data on BLE...\n",
+    Serial.printf("Dashboard ready (%s, %dx%d), waiting for data on USB/BLE...\n",
         board_caps().name, W, H);
 }
-
-// Mindestabstand zwischen zwei Samples fuer usage_rate.cpp (siehe loop()).
-// 60 s und nicht 30 s: Der Ring hat 6 Plaetze, also 5 Abstaende, und die
-// Messspanne muss MIN_WINDOW_MS (240 s) erreichen. 5 x 30 s = 150 s haette die
-// Gruppe dauerhaft auf "Idle" gehalten, 5 x 60 s = 300 s reicht.
-static const uint32_t USAGE_RATE_SAMPLE_MS = 60000;
-static uint32_t usage_rate_last_ms = 0;
-static bool     usage_rate_sampled = false;
 
 static ble_state_t last_ble_state = BLE_STATE_INIT;
 
@@ -500,41 +576,17 @@ void loop() {
 
     check_serial_cmd();
 
+    // Kabelverbindung fuer die Anzeige: frisch, solange Nutzlasten ankommen.
+    static bool last_serial_link = false;
+    const bool serial_link = serial_seen && (millis() - serial_last_ms) < SERIAL_LINK_MS;
+    if (serial_link != last_serial_link) {
+        last_serial_link = serial_link;
+        ui_update_serial_link(serial_link);
+    }
+
     if (ble_has_data()) {
-        if (parse_json(ble_get_data(), &usage)) {
-            int g_before = usage_rate_group();
-            // Nur echte Nutzungsmessungen sampeln, und hoechstens alle 60 s:
-            // Die Session-Updates alle paar Sekunden tragen dieselbe Nutzung und
-            // fuellten den Ring mit 6 Plaetzen so schnell, dass er weniger als
-            // MIN_WINDOW_MS abdeckte (Gruppe blieb "Idle"); ein {"ok":false}
-            // sampelte 0.0 und erzeugte danach einen scheinbaren Sprung.
-            // Der Reset-Ton haengt am Rueckgabewert; ein Abfall wird beim
-            // naechsten Sample genau einmal erkannt, danach ist der Ring neu.
-            bool session_reset = false;
-            if (usage.ok && (!usage_rate_sampled ||
-                             millis() - usage_rate_last_ms >= USAGE_RATE_SAMPLE_MS)) {
-                session_reset = usage_rate_sample(usage.session_pct);
-                usage_rate_last_ms = millis();
-                usage_rate_sampled = true;
-            }
-            int g_after = usage_rate_group();
-            // 5-hour session limit refilled → chime so the user knows they can
-            // use Claude again (no-op on boards without a buzzer). Gated on the
-            // daemon's opt-in `chime` config; the `buzz` serial cmd ignores it.
-            if (session_reset && usage.chime) {
-                Serial.println("session reset detected — chime");
-                sound_hal_play_reset();
-            }
-            if (g_after != g_before) {
-                Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
-                    g_before, g_after, usage.session_pct);
-                if (splash_is_active()) splash_pick_for_current_rate();
-            }
-            ui_update(&usage);
-            ble_send_ack();
-        } else {
-            ble_send_nack();
-        }
+        if (apply_payload(ble_get_data())) ble_send_ack();
+        else                               ble_send_nack();
     }
 
     delay(5);
